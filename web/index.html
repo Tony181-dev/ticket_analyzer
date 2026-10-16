@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Ticket Analyzer</title>
+  <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <img src="/static/icon.svg" alt="" width="28" height="28">
+      <div>
+        <div class="brand-name">Ticket Analyzer</div>
+        <div class="brand-sub">Jira → AI → Collab</div>
+      </div>
+    </div>
+    <div class="mode" role="radiogroup" aria-label="Chế độ AI">
+      <button class="mode-btn" data-mode="m365" role="radio">M365 Copilot</button>
+      <button class="mode-btn" data-mode="copilot" role="radio">Copilot CLI</button>
+    </div>
+    <div class="top-actions">
+      <button id="setupPill" class="pill" title="Kiểm tra & cài đặt môi trường">
+        <span class="dot"></span><span id="setupText">Đang kiểm tra…</span>
+      </button>
+      <button id="settingsBtn" class="icon-btn" title="Cấu hình" aria-label="Cấu hình">
+        <svg viewBox="0 0 24 24" width="20" height="20"><use href="#i-sliders"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <div class="layout">
+    <aside class="history">
+      <button id="newRun" class="btn btn-primary btn-block">+ Ticket mới</button>
+      <div class="history-title">Lịch sử</div>
+      <ul id="runList" class="run-list"></ul>
+    </aside>
+
+    <main class="main">
+      <section class="card input-card">
+        <div class="field grow">
+          <label for="issue">Jira ticket</label>
+          <input id="issue" placeholder="ABC-1234 hoặc dán link Jira" autocomplete="off">
+        </div>
+        <div class="field grow2">
+          <label>File log <span class="muted">(tuỳ chọn)</span></label>
+          <div class="picker">
+            <div id="logChips" class="chips"><span class="muted small">Chưa chọn file log</span></div>
+            <button class="btn btn-ghost" id="pickLogs">Chọn file…</button>
+          </div>
+        </div>
+        <div class="field grow2">
+          <label for="source">Folder source code <span class="muted">(tuỳ chọn)</span></label>
+          <div class="picker">
+            <input id="source" placeholder="D:\src\project" autocomplete="off">
+            <button class="btn btn-ghost" id="pickSource">Chọn folder…</button>
+          </div>
+        </div>
+        <div class="run-actions">
+          <button id="runAll" class="btn btn-primary btn-lg">
+            <svg viewBox="0 0 24 24" width="18" height="18"><use href="#i-play"/></svg> Chạy toàn bộ
+          </button>
+          <button id="stopBtn" class="btn btn-danger btn-lg" hidden>
+            <svg viewBox="0 0 24 24" width="18" height="18"><use href="#i-stop"/></svg> Dừng
+          </button>
+        </div>
+      </section>
+
+      <section class="card flow-card">
+        <div class="flow-head">
+          <div>
+            <h2 id="runTitle">Ticket mới</h2>
+            <div id="runSub" class="muted small">Nhập ticket rồi bấm “Chạy toàn bộ”. Bấm vào từng bước để xem file.</div>
+          </div>
+          <div class="flow-head-actions">
+            <a id="collabLink" class="btn btn-ghost" target="_blank" rel="noopener" hidden>Mở trang Collab ↗</a>
+            <button id="openFolder" class="btn btn-ghost" hidden>Mở thư mục</button>
+          </div>
+        </div>
+        <ol id="flow" class="flow"></ol>
+      </section>
+
+      <section class="card console-card">
+        <button class="console-head" id="consoleToggle" aria-expanded="true">
+          <span>Nhật ký</span><span class="muted small" id="consoleCount"></span>
+        </button>
+        <pre id="console" class="console"></pre>
+      </section>
+    </main>
+  </div>
+
+  <!-- step detail drawer -->
+  <aside id="drawer" class="drawer" aria-hidden="true">
+    <div class="drawer-head">
+      <div>
+        <div class="muted small" id="drawerStepNo"></div>
+        <h3 id="drawerTitle"></h3>
+        <div id="drawerStatus"></div>
+      </div>
+      <button class="icon-btn" id="drawerClose" aria-label="Đóng">✕</button>
+    </div>
+    <div id="drawerExtra"></div>
+    <div class="tabs" id="drawerTabs"></div>
+    <div class="toolbar" id="drawerToolbar"></div>
+    <div class="viewer" id="viewer"></div>
+    <div class="drawer-foot">
+      <button class="btn btn-ghost" id="runOnly">Chạy riêng bước này</button>
+      <button class="btn btn-primary" id="runFrom">Chạy từ bước này →</button>
+    </div>
+  </aside>
+  <div id="scrim" class="scrim" hidden></div>
+
+  <!-- setup modal -->
+  <div id="setupModal" class="modal" hidden>
+    <div class="modal-box">
+      <div class="modal-head">
+        <h3>Cài đặt môi trường</h3>
+        <button class="icon-btn" data-close aria-label="Đóng">✕</button>
+      </div>
+      <p class="muted small">App tự kiểm tra và tự cài những gì còn thiếu. Bạn chỉ cần nhập token và đăng nhập.</p>
+      <div class="setup-actions">
+        <button class="btn btn-primary" id="fixAll">Tự sửa tất cả</button>
+        <button class="btn btn-ghost" id="recheck">Kiểm tra lại</button>
+      </div>
+      <ul id="checkList" class="check-list"></ul>
+      <form id="tokenForm" class="token-form" hidden>
+        <div class="token-title">Token Jira / Collab <span class="muted small">(Personal Access Token, lưu trên máy này)</span></div>
+        <div class="field"><label for="jiraToken">Jira token</label><input id="jiraToken" type="password" autocomplete="off"></div>
+        <div class="field"><label for="collabToken">Collab token</label><input id="collabToken" type="password" autocomplete="off"></div>
+        <details class="small"><summary>Đổi URL</summary>
+          <div class="field"><label for="jiraUrl">Jira URL</label><input id="jiraUrl"></div>
+          <div class="field"><label for="collabUrl">Collab URL</label><input id="collabUrl"></div>
+        </details>
+        <button class="btn btn-primary" type="submit">Lưu & kiểm tra kết nối</button>
+      </form>
+      <pre id="doctorLog" class="console small-console"></pre>
+    </div>
+  </div>
+
+  <!-- settings modal -->
+  <div id="settingsModal" class="modal" hidden>
+    <form class="modal-box" id="settingsForm">
+      <div class="modal-head">
+        <h3>Cấu hình</h3>
+        <button class="icon-btn" type="button" data-close aria-label="Đóng">✕</button>
+      </div>
+      <div class="grid2">
+        <div class="field"><label for="s_space">Collab space key</label><input id="s_space" name="collab_space_key"></div>
+        <div class="field"><label for="s_parent">Parent page ID <span class="muted">(tuỳ chọn)</span></label><input id="s_parent" name="collab_parent_id"></div>
+        <div class="field"><label for="s_m365">Model M365</label><input id="s_m365" name="m365_model"></div>
+        <div class="field"><label for="s_cli">Model Copilot CLI <span class="muted">(trống = mặc định)</span></label><input id="s_cli" name="copilot_model" placeholder="vd: claude-sonnet-4.5"></div>
+        <div class="field"><label for="s_refine">Model refine format <span class="muted">(CLI)</span></label><input id="s_refine" name="refine_model" placeholder="vd: gpt-5-mini"></div>
+        <div class="field"><label for="s_budget">Token tối đa cho log brief</label><input id="s_budget" name="log_budget_tokens" type="number" min="2000" step="1000"></div>
+      </div>
+      <label class="check"><input type="checkbox" name="review_before_publish"> Dừng để duyệt report trước khi đăng Collab</label>
+      <label class="check"><input type="checkbox" name="m365_headless"> Chạy M365 ẩn (headless)</label>
+      <div class="modal-foot"><button class="btn btn-primary" type="submit">Lưu</button></div>
+    </form>
+  </div>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <defs>
+      <symbol id="i-gear" viewBox="0 0 24 24"><path fill="currentColor" d="M19.4 13a7.5 7.5 0 0 0 0-2l2.1-1.6a.5.5 0 0 0 .1-.6l-2-3.5a.5.5 0 0 0-.6-.2l-2.5 1a7.6 7.6 0 0 0-1.7-1l-.4-2.6a.5.5 0 0 0-.5-.4h-4a.5.5 0 0 0-.5.4l-.4 2.6a7.6 7.6 0 0 0-1.7 1l-2.5-1a.5.5 0 0 0-.6.2l-2 3.5a.5.5 0 0 0 .1.6L4.6 11a7.5 7.5 0 0 0 0 2l-2.1 1.6a.5.5 0 0 0-.1.6l2 3.5c.1.2.4.3.6.2l2.5-1c.5.4 1.1.7 1.7 1l.4 2.6c0 .3.3.4.5.4h4c.3 0 .5-.2.5-.4l.4-2.6c.6-.3 1.2-.6 1.7-1l2.5 1c.2.1.5 0 .6-.2l2-3.5a.5.5 0 0 0-.1-.6L19.4 13ZM12 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7Z"/></symbol>
+      <symbol id="i-play" viewBox="0 0 24 24"><path fill="currentColor" d="M8 5.5v13a1 1 0 0 0 1.5.9l10.2-6.5a1 1 0 0 0 0-1.7L9.5 4.6A1 1 0 0 0 8 5.5Z"/></symbol>
+      <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></symbol>
+      <symbol id="i-check" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" d="m5 12.5 4.5 4.5L19 7.5"/></symbol>
+      <symbol id="i-x" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" d="M6.5 6.5l11 11m0-11-11 11"/></symbol>
+      <symbol id="i-pause" viewBox="0 0 24 24"><path fill="currentColor" d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z"/></symbol>
+      <symbol id="i-skip" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" d="M5 12h14"/></symbol>
+      <symbol id="i-refresh" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" d="M19 12a7 7 0 1 1-2.1-5M19 4.5V8h-3.5"/></symbol>
+      <symbol id="i-sliders" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M4 7h10M18 7h2M4 17h4M12 17h8M14 4.5v5M8 14.5v5"/></symbol>
+      <symbol id="s-jira" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M6 3.5h12v17H6zM9 8h6M9 12h6M9 16h3.5"/></symbol>
+      <symbol id="s-understand" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M12 3.5a8.5 8.5 0 1 0 0 17 8.5 8.5 0 0 0 0-17Zm0 4V12l3 2"/></symbol>
+      <symbol id="s-log" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M4 6h16M4 10h10M4 14h16M4 18h8M17 16.5l2 2 3-3.5"/></symbol>
+      <symbol id="s-graph" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="8" r="2.5"/><circle cx="9" cy="18" r="2.5"/><path d="M8.3 7.1l7.4.8M7 8.4l1.4 7.2M16.4 10l-5.6 6.2"/></g></symbol>
+      <symbol id="s-analyze" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M12 3l1.8 4.7L18.5 9.5 13.8 11.3 12 16l-1.8-4.7L5.5 9.5l4.7-1.8zM18.5 15.5l.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8z"/></symbol>
+      <symbol id="s-format" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M8.5 7 4 12l4.5 5M15.5 7 20 12l-4.5 5M13.5 5l-3 14"/></symbol>
+      <symbol id="s-collab" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M12 15V4m0 0L8 8m4-4 4 4M5 14v4.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V14"/></symbol>
+    </defs>
+  </svg>
+  <script src="/static/markdown.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

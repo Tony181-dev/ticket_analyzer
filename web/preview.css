@@ -1,0 +1,15 @@
+body { margin: 0; background: #fff; color: #1d2433; font: 14px/1.6 "Segoe UI", system-ui, sans-serif; }
+.cf-page { max-width: 920px; margin: 0 auto; padding: 24px 28px 48px; }
+h1, h2, h3 { letter-spacing: -.01em; } h2 { font-size: 19px; margin-top: 26px; border-bottom: 1px solid #e4e7ec; padding-bottom: 4px; } h3 { font-size: 16px; }
+table { border-collapse: collapse; margin: 10px 0; width: 100%; font-size: 13px; }
+th, td { border: 1px solid #d0d5dd; padding: 6px 10px; text-align: left; vertical-align: top; }
+th { background: #f4f5f7; }
+code { font-family: Consolas, monospace; background: #f4f5f7; padding: 1px 5px; border-radius: 4px; font-size: 12.5px; }
+pre { margin: 0; padding: 12px; background: #fbfbfc; overflow: auto; font: 12px/1.55 Consolas, monospace; white-space: pre-wrap; }
+.cf-macro { margin: 12px 0; border: 1px solid #d0d5dd; border-radius: 6px; overflow: hidden; }
+.cf-macro-title { padding: 4px 10px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; background: #f4f5f7; color: #475467; }
+.cf-macro > p, .cf-macro > ul, .cf-macro > table { margin: 8px 12px; }
+.cf-info { border-color: #b9cdfa; } .cf-info .cf-macro-title { background: #eaf0ff; color: #2457d6; }
+.cf-note, .cf-warning { border-color: #f2cf8f; } .cf-note .cf-macro-title, .cf-warning .cf-macro-title { background: #fff4e0; color: #b86e00; }
+.cf-tip { border-color: #a6dcbc; } .cf-tip .cf-macro-title { background: #e8f6ee; color: #128a4c; }
+.cf-plantuml .cf-macro-title::after { content: " — mã sơ đồ (Collab sẽ vẽ hình khi đăng)"; text-transform: none; font-weight: 500; letter-spacing: 0; }

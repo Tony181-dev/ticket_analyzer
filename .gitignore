@@ -1,0 +1,9 @@
+# runtime data: runs, caches and data/config/mcp.json (contains Jira/Collab tokens)
+data/
+.venv/
+__pycache__/
+*.pyc
+*.tmp
+.env
+# legacy single-file source dump (internal code)
+plantodo.md
