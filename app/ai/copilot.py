@@ -36,7 +36,11 @@ def _npm_root():
 
 
 def command():
-    """argv prefix that launches the CLI, or None when it is not installed."""
+    """argv prefix that launches the CLI, or None when it is not installed.
+
+    Prefers the npm package (node + npm-loader.js, no cmd.exe quoting); falls
+    back to any `copilot` executable on PATH (winget / standalone installs).
+    """
     node = shutil.which("node")
     root = _npm_root()
     if node and root:
@@ -90,7 +94,7 @@ def ask(prompt, cwd, model="", timeout=900):
         if not detail:
             detail = "no output (cancelled?)"
         if any(k in detail.lower() for k in ("/login", "authenticat", "not logged", "unauthorized")):
-            raise CopilotError("Copilot CLI is not logged in. Open Setup → 'Đăng nhập Copilot'. " + detail)
+            raise CopilotError("Copilot CLI is not signed in (Setup → Copilot sign-in). " + detail)
         raise CopilotError(f"Copilot CLI failed (exit {proc.returncode}): {detail}")
     if not text:
         raise CopilotError("Copilot CLI returned an empty response")
@@ -109,12 +113,17 @@ def cancel():
             pass
 
 
+def probe():
+    """Smallest real request: proves install + login + network. Raises CopilotError."""
+    import tempfile
+    with tempfile.TemporaryDirectory(prefix="ta-copilot-") as tmp:
+        return ask("Reply with exactly the word OK and nothing else.", tmp, timeout=180)
+
+
 def open_login_terminal():
-    """Open a visible terminal running `copilot login` (OAuth browser flow)."""
+    """Open a visible terminal running `copilot login` (OAuth browser flow); returns the process."""
     cmd = command()
     if not cmd:
         raise CopilotError("Copilot CLI is not installed")
-    if hasattr(subprocess, "CREATE_NEW_CONSOLE"):
-        subprocess.Popen([*cmd, "login"], creationflags=subprocess.CREATE_NEW_CONSOLE, env=child_env())
-    else:
-        subprocess.Popen([*cmd, "login"], env=child_env())
+    flags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
+    return subprocess.Popen([*cmd, "login"], creationflags=flags, env=child_env())

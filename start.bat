@@ -10,13 +10,15 @@ if exist ".venv\Scripts\python.exe" goto deps
 call :findpy
 if not defined PY goto nopy
 echo [Ticket Analyzer] Tao moi truong Python (.venv) lan dau...
-%PY% -m venv .venv
+rem Reuse packages already installed in the base Python (Playwright, its Chromium, uv): nothing is reinstalled.
+%PY% -m venv --system-site-packages .venv
 if errorlevel 1 goto fail
 
 :deps
 echo [Ticket Analyzer] Kiem tra thu vien Python...
 set "VPY=.venv\Scripts\python.exe"
 set "QUICK=--retries 1 --timeout 20"
+%VPY% -c "import playwright, uv" >nul 2>&1 && goto run
 %VPY% -m pip install -q %QUICK% -r requirements.txt >nul 2>&1 && goto run
 
 rem Corporate proxies re-sign TLS. A fresh venv ships an old pip that ignores the

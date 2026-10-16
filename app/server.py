@@ -25,10 +25,11 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlparse
 
-from . import doctor, events, mcp, paths, picker, pipeline, settings
+from . import attachments, doctor, events, mcp, paths, picker, pipeline, settings
 from .ai import copilot
 from .ai.m365 import worker as m365_worker
 from .evidence import graph as codegraph
+from .i18n import t
 
 TYPES = {".md": "text/markdown; charset=utf-8", ".json": "application/json; charset=utf-8",
          ".xhtml": "text/plain; charset=utf-8", ".txt": "text/plain; charset=utf-8", ".log": "text/plain; charset=utf-8",
@@ -148,7 +149,7 @@ class Handler(BaseHTTPRequestHandler):
             body = self._json()
             if p == "/api/settings":
                 if pipeline.executor.busy and "ai_mode" in body:
-                    raise RuntimeError("Không đổi chế độ AI khi đang chạy")
+                    raise RuntimeError(t("err.mode_busy"))
                 saved = settings.save(body)
                 events.publish("settings", settings=saved)
                 return self._send(200, saved)
@@ -171,32 +172,51 @@ class Handler(BaseHTTPRequestHandler):
                 _background(lambda: doctor.checks(probe_m365=True))
                 return self._send(202, {"ok": True})
             if p == "/api/doctor/m365-login":
-                _background(lambda: (events.publish("doctor_log", line="Mở Chromium để đăng nhập M365 (tối đa 5 phút)…"),
+                _background(lambda: (events.publish("doctor_log", line=t("dr.m365_opening")),
                                      m365_worker.login(), doctor._cache.update(m365=m365_worker.status)))
                 return self._send(202, {"ok": True})
             if p == "/api/doctor/copilot-login":
-                copilot.open_login_terminal()
-                return self._send(200, {"ok": True})
+                if not copilot.command():
+                    raise RuntimeError("Copilot CLI is not installed")
+                _background(doctor.copilot_login_flow)
+                return self._send(202, {"ok": True})
+            if p == "/api/doctor/copilot-check":
+                _background(doctor.verify_copilot)
+                return self._send(202, {"ok": True})
             if p == "/api/stop":
                 pipeline.executor.stop()
                 return self._send(200, {"ok": True})
+            if p == "/api/runs/clear":
+                keep = pipeline.executor.run_id if pipeline.executor.busy else None
+                removed = pipeline.clear_runs(keep)
+                events.publish("runs_cleared", keep=keep)
+                return self._send(200, {"removed": removed, "kept": keep})
             if p == "/api/runs":
-                run = pipeline.create(body.get("issue"), body.get("log_files") or [], body.get("source_dir") or "")
+                run = pipeline.create(body.get("issue"), body.get("log_files") or [], body.get("source_dir") or "",
+                                      bool(body.get("auto_attachments")), body.get("download_dir") or "")
                 if body.get("start", True):
                     pipeline.executor.start(run["id"])
                 return self._send(200, run)
-            m = re.fullmatch(r"/api/runs/([^/]+)/(start|inputs|graph-query|open-folder)", p)
+            m = re.fullmatch(r"/api/runs/([^/]+)/(start|inputs|graph-query|open-folder|attachments)", p)
             if m:
                 run_id, action = m.groups()
                 if action == "start":
                     pipeline.executor.start(run_id, body.get("from"), bool(body.get("only")), bool(body.get("publish")))
                     return self._send(200, {"ok": True})
                 if action == "inputs":
-                    return self._send(200, pipeline.update_inputs(run_id, body.get("log_files"), body.get("source_dir")))
+                    return self._send(200, pipeline.update_inputs(run_id, body.get("log_files"), body.get("source_dir"),
+                                                                  body.get("auto_attachments"), body.get("download_dir")))
+                if action == "attachments":
+                    pipeline.executor.fetch_attachments(run_id, body.get("names") or [], body.get("analyze") or [], body.get("folder"))
+                    return self._send(202, {"ok": True})
                 if action == "graph-query":
                     return self._send(200, {"hits": codegraph.query(pipeline.read_file(run_id, "04-graph.json"), body.get("q", ""))})
                 if action == "open-folder":
-                    _open_folder(pipeline.run_dir(run_id))
+                    target = pipeline.run_dir(run_id)
+                    if body.get("what") == "attachments":
+                        target = pipeline.attachment_folder(pipeline.get(run_id))
+                        target.mkdir(parents=True, exist_ok=True)
+                    _open_folder(target)
                     return self._send(200, {"ok": True})
             self._send(404, {"error": "not found"})
         except Exception as exc:
@@ -233,6 +253,8 @@ def state():
         "busy": pipeline.executor.busy,
         "busy_run": pipeline.executor.run_id if pipeline.executor.busy else None,
         "mcp": mcp.status(),
+        "models": {"m365": settings.M365_MODELS, "copilot": settings.COPILOT_MODELS},
+        "default_download_dir": str(attachments.default_folder("<ISSUE>")),
     }
 
 
@@ -241,7 +263,7 @@ def main():
     port = int(os.getenv("TA_PORT") or settings.load()["port"])
     server = Server(("127.0.0.1", port), Handler)
     url = f"http://localhost:{port}"
-    print(f"Ticket Analyzer đang chạy tại {url}  (Ctrl+C để dừng)", flush=True)
+    print(t("srv.running", url=url), flush=True)
     # Probe the M365 login once in the background so Setup shows the real state.
     if settings.load()["ai_mode"] == "m365":
         _background(lambda: doctor.checks(probe_m365=True))

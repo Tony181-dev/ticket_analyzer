@@ -16,8 +16,9 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from . import ai, events, mcp, paths, settings
+from . import ai, attachments, events, mcp, paths, settings
 from .evidence import graph as codegraph
+from .i18n import t
 from .evidence import logsleuth
 from .report import collab, preview, storage
 from .report.refine_pipeline import refine_report
@@ -35,7 +36,8 @@ ORDER = [s["id"] for s in STEPS]
 
 # (file, label, kind, editable)
 ARTIFACTS = {
-    "jira": [("01-jira.md", "Ticket", "md", False), ("01-jira.json", "JSON thô", "json", False)],
+    "jira": [("01-jira.md", "Ticket", "md", False), ("01-jira.json", "JSON thô", "json", False),
+             ("01-attachments.json", "Attachments", "json", False)],
     "understand": [("02-understanding.md", "Hiểu ticket", "md", False), ("02-focus.json", "Khung giờ & từ khoá", "json", False),
                    ("02-log-span.md", "Dải giờ trong log", "md", False)],
     "log": [("03-log-brief.md", "Log brief", "md", False), ("03-catalog.md", "Catalog log", "md", False)],
@@ -94,7 +96,7 @@ def get(run_id):
             run = json.loads(file.read_text(encoding="utf-8"))
             for step in ORDER:  # a crash mid-run leaves "running" behind
                 if run["steps"][step]["status"] == "running":
-                    run["steps"][step].update(status="error", error="Bị gián đoạn (server đã khởi động lại)")
+                    run["steps"][step].update(status="error", error=t("err.interrupted"))
             _runs[run_id] = run
         return _runs[run_id]
 
@@ -113,21 +115,23 @@ def list_runs(limit=50):
     return items
 
 
-def create(issue, log_files=(), source_dir=""):
+def create(issue, log_files=(), source_dir="", auto_attachments=False, download_dir=""):
     key = issue_key(issue)
     if not key:
-        raise ValueError("Nhập Jira key hoặc URL hợp lệ, ví dụ ABC-1234")
+        raise ValueError(t("err.issue"))
     files = [str(Path(f)) for f in log_files or [] if str(f).strip()]
     for f in files:
         if not Path(f).is_file():
-            raise ValueError(f"Không tìm thấy file log: {f}")
+            raise ValueError(t("err.log_missing", path=f))
     if source_dir and not Path(source_dir).is_dir():
-        raise ValueError(f"Không tìm thấy folder source: {source_dir}")
+        raise ValueError(t("err.src_missing", path=source_dir))
     run_id = f"{key}-{datetime.now():%Y%m%d-%H%M%S}"
     run_dir(run_id).mkdir(parents=True, exist_ok=True)
     run = {
         "id": run_id, "issue": key, "summary": "", "created": time.time(), "updated": time.time(),
-        "inputs": {"log_files": files, "source_dir": str(source_dir or "")},
+        "inputs": {"log_files": files, "source_dir": str(source_dir or ""), "auto_attachments": bool(auto_attachments),
+                   "download_dir": str(download_dir or "")},
+        "attachments": [],
         "session_id": str(uuid.uuid4()), "focus": {}, "collab": {}, "ai_mode": settings.load()["ai_mode"],
         "steps": {s: {"status": "idle", "note": "", "error": "", "started": None, "ended": None, "artifacts": []} for s in ORDER},
     }
@@ -137,8 +141,24 @@ def create(issue, log_files=(), source_dir=""):
     return run
 
 
-def update_inputs(run_id, log_files=None, source_dir=None):
+def clear_runs(keep=None):
+    """Delete every run folder except `keep` (the one executing). Downloads elsewhere are untouched."""
+    removed = 0
+    with _lock:
+        for d in list(paths.RUNS.iterdir()) if paths.RUNS.exists() else []:
+            if d.is_dir() and d.name != keep:
+                shutil.rmtree(d, ignore_errors=True)
+                _runs.pop(d.name, None)
+                removed += 1
+    return removed
+
+
+def update_inputs(run_id, log_files=None, source_dir=None, auto_attachments=None, download_dir=None):
     run = get(run_id)
+    if auto_attachments is not None:
+        run["inputs"]["auto_attachments"] = bool(auto_attachments)
+    if download_dir is not None:
+        run["inputs"]["download_dir"] = str(download_dir)
     if log_files is not None:
         run["inputs"]["log_files"] = [f for f in log_files if f]
         _mark_stale(run, "understand")
@@ -164,7 +184,7 @@ def read_file(run_id, name):
 
 def write_file(run_id, name, text):
     if name not in EDITABLE:
-        raise ValueError("File này không sửa được")
+        raise ValueError(t("err.not_editable"))
     run = get(run_id)
     if name == "06-report.xhtml":
         # Same repair + validation as the AI output; raises with the parser's message if unrecoverable.
@@ -175,7 +195,7 @@ def write_file(run_id, name, text):
         text = json.dumps(run["focus"], ensure_ascii=False, indent=2)
     (run_dir(run_id) / name).write_text(text, encoding="utf-8")
     _mark_stale(run, DOWNSTREAM_OF_FILE.get(name, "format"))
-    _log(run, f"Đã lưu {name} (các bước sau được đánh dấu cần chạy lại)")
+    _log(run, t("log.saved", name=name))
     _save(run)
     return run
 
@@ -195,7 +215,7 @@ class Executor:
 
     def start(self, run_id, start=None, only=False, publish=False):
         if self.busy:
-            raise RuntimeError("Đang có một luồng chạy. Hãy dừng nó trước.")
+            raise RuntimeError(t("err.busy"))
         if not get(run_id):
             raise ValueError("Run not found")
         self.cancel.clear()
@@ -220,33 +240,33 @@ class Executor:
                     break
                 state = run["steps"][step]
                 if not APPLICABLE[step](run):
-                    state.update(status="skipped", note=SKIP_REASON[step], error="")
+                    state.update(status="skipped", note=t(SKIP_REASON[step]), error="")
                     _save(run)
                     continue
                 if step == "collab" and cfg.get("review_before_publish") and not publish and not (only and start == "collab"):
-                    state.update(status="waiting", note="Kiểm tra report rồi bấm 'Đăng lên Collab'", error="")
+                    state.update(status="waiting", note=t("note.review"), error="")
                     _save(run)
                     break
                 state.update(status="running", note="", error="", started=time.time(), ended=None)
                 _save(run)
-                _log(run, f"▶ {STEP_TITLE[step]}")
+                _log(run, "▶ " + t("step." + step))
                 try:
                     note = RUNNERS[step](run, cfg, self)
                 except Cancelled:
-                    state.update(status="idle", note="Đã dừng", ended=time.time())
+                    state.update(status="idle", note=t("note.stopped"), ended=time.time())
                     _save(run)
                     break
                 except Exception as exc:  # surface every failure on the step card
                     if self.cancel.is_set():
-                        state.update(status="idle", note="Đã dừng", ended=time.time())
+                        state.update(status="idle", note=t("note.stopped"), ended=time.time())
                     else:
                         state.update(status="error", error=str(exc), ended=time.time())
-                        _log(run, f"✗ {STEP_TITLE[step]}: {exc}")
+                        _log(run, "✗ " + t("step." + step) + f": {exc}")
                         _log(run, traceback.format_exc(), quiet=True)
                     _save(run)
                     break
                 state.update(status="done", note=note or "", ended=time.time())
-                _log(run, f"✓ {STEP_TITLE[step]}" + (f" — {note}" if note else ""))
+                _log(run, "✓ " + t("step." + step) + (f" — {note}" if note else ""))
                 _save(run)
                 if only:
                     break
@@ -256,6 +276,35 @@ class Executor:
     def check(self):
         if self.cancel.is_set():
             raise Cancelled()
+
+    def fetch_attachments(self, run_id, names, analyze, folder=None):
+        """Manual download (Jira step panel). Uses the same busy slot as a run."""
+        if self.busy:
+            raise RuntimeError(t("err.busy"))
+        run = get(run_id)
+        if not run:
+            raise ValueError("Run not found")
+        if folder is not None:
+            run["inputs"]["download_dir"] = str(folder).strip()
+        self.cancel.clear()
+        self.run_id = run_id
+
+        def job():
+            events.publish("busy", run_id=run_id, busy=True)
+            try:
+                added = _fetch_attachments(run, set(names), set(analyze), self.check)
+                if added:
+                    _mark_stale(run, "understand")
+                _save(run)
+            except Cancelled:
+                _log(run, t("note.stopped"))
+            except Exception as exc:
+                _log(run, f"✗ {exc}")
+            finally:
+                _save(run)
+                events.publish("busy", run_id=run_id, busy=False)
+        self.thread = threading.Thread(target=job, daemon=True)
+        self.thread.start()
 
 
 executor = Executor()
@@ -295,7 +344,7 @@ def step_jira(run, cfg, ex):
         "issue_key": run["issue"], "fields": "*all", "expand": "renderedFields,changelog", "comment_limit": 50})
     text = mcp.result_text(result)
     if result.get("isError") or not text.strip():
-        raise RuntimeError("Jira trả lỗi: " + (text[:800] or "không có nội dung"))
+        raise RuntimeError(t("err.jira", detail=text[:800] or t("err.no_content")))
     try:
         data = json.loads(text)
         pretty = json.dumps(data, ensure_ascii=False, indent=2)
@@ -307,7 +356,51 @@ def step_jira(run, cfg, ex):
     _write(run, "01-jira.json", pretty)
     _write(run, "01-jira.md", f"# Jira Ticket Evidence — {run['issue']}\n\n"
            f"Link: {cfg['jira_browse_url'].rstrip('/')}/{run['issue']}\n\n```json\n{pretty}\n```\n")
-    return run["summary"][:120]
+    found = attachments.from_issue_json(text)
+    if not found:
+        try:
+            found = attachments.list_rest(run["issue"])
+        except Exception as exc:  # listing attachments must never fail the Jira step
+            _log(run, f"attachments: {exc}", quiet=True)
+    known = {a["filename"]: a for a in run.get("attachments") or []}
+    run["attachments"] = [{**a, **{k: known[a["filename"]][k] for k in ("path", "analyzed") if k in known.get(a["filename"], {})}}
+                          for a in found]
+    _write(run, "01-attachments.json", json.dumps(run["attachments"], ensure_ascii=False, indent=2))
+    note = run["summary"][:120]
+    if found:
+        note += " · " + t("note.attachments", n=len(found))
+    if run["inputs"].get("auto_attachments"):
+        wanted = {a["filename"] for a in found if a["kind"] in ("log", "archive")}
+        if wanted:
+            added = _fetch_attachments(run, wanted, wanted, ex.check)
+            note += " · " + t("note.att_logs", n=added)
+    return note
+
+
+def attachment_folder(run):
+    custom = (run["inputs"].get("download_dir") or settings.load().get("download_dir") or "").strip()
+    return Path(custom) / run["issue"] if custom else attachments.default_folder(run["issue"])
+
+
+def _fetch_attachments(run, names, analyze, cancel):
+    """Download the named attachments; logs from `analyze` ones join the log inputs. Returns #log files added."""
+    items = [a for a in run.get("attachments") or [] if a["filename"] in names]
+    if not items:
+        return 0
+    folder = attachment_folder(run)
+    _log(run, t("log.att_download", n=len(items), folder=folder))
+    logs, files = attachments.collect(run["issue"], items, analyze, folder, log=lambda m: _log(run, m), cancel=cancel)
+    for a in run["attachments"]:
+        if a["filename"] in files:
+            a["path"] = files[a["filename"]]
+            a["analyzed"] = a["filename"] in analyze or a.get("analyzed", False)
+    current = run["inputs"]["log_files"]
+    added = [f for f in logs if f not in current]
+    run["inputs"]["log_files"] = current + added
+    _write(run, "01-attachments.json", json.dumps(run["attachments"], ensure_ascii=False, indent=2))
+    _log(run, t("log.att_added", n=len(added)))
+    _save(run)
+    return len(added)
 
 
 def _find_summary(data):
@@ -340,8 +433,9 @@ def step_understand(run, cfg, ex):
     run["focus"] = focus
     _write(run, "02-focus.json", json.dumps(focus, ensure_ascii=False, indent=2))
     if focus.get("time_start") or focus.get("time_end"):
-        return f"Khung giờ {focus.get('time_start') or '…'} → {focus.get('time_end') or '…'} ({focus.get('confidence', '?')})"
-    return "Không xác định được giờ — dùng toàn bộ log"
+        return t("note.window", start=focus.get("time_start") or "…", end=focus.get("time_end") or "…",
+                 confidence=focus.get("confidence") or "?")
+    return t("note.nowindow")
 
 
 def _parse_focus(answer):
@@ -370,7 +464,7 @@ def step_log(run, cfg, ex):
     source = run["inputs"]["source_dir"]
     catalog = None
     if source:
-        _log(run, "Quét source để lập catalog log statement…")
+        _log(run, t("log.scan"))
         catalog = logsleuth.catalog_for(source)
         shutil.copyfile(catalog, _path(run, "03-catalog.md"))
     ex.check()
@@ -379,10 +473,10 @@ def step_log(run, cfg, ex):
     stats = logsleuth.slice_logs(files, out, catalog, focus, cfg["log_budget_tokens"])
     window = stats.get("timeWindow")
     if stats.get("kept", 0) == 0 and window:
-        _log(run, "Khung giờ không có dòng nào khớp → cắt lại trên toàn bộ log")
+        _log(run, t("log.window_empty"))
         stats = logsleuth.slice_logs(files, out, catalog, {**focus, "time_start": "", "time_end": ""}, cfg["log_budget_tokens"])
         window = None
-    note = f"{stats['totalLines']:,} → {stats['kept']:,} dòng (~{stats['tokens']:,} token)"
+    note = t("note.log", total=stats["totalLines"], kept=stats["kept"], tokens=stats["tokens"])
     if window:
         note += f", {window['start']}–{window['end']}"
     return note
@@ -391,12 +485,12 @@ def step_log(run, cfg, ex):
 def step_graph(run, cfg, ex):
     out, meta = codegraph.build(run["inputs"]["source_dir"], cfg["graph_token_budget"])
     codegraph.copy_into(out, run_dir(run["id"]))
-    return f"{meta.get('files', 0)} file · {meta.get('nodes', 0)} node · {meta.get('edges', 0)} cạnh"
+    return t("note.graph", files=meta.get("files", 0), nodes=meta.get("nodes", 0), edges=meta.get("edges", 0))
 
 
 def step_analyze(run, cfg, ex):
     if not _path(run, "01-jira.md").exists():
-        raise RuntimeError("Chạy bước Jira trước")
+        raise RuntimeError(t("err.need_jira"))
     files = [_path(run, "01-jira.md")]
     if _done(run, "understand") and _path(run, "02-understanding.md").exists():
         files.append(_path(run, "02-understanding.md"))
@@ -411,12 +505,12 @@ def step_analyze(run, cfg, ex):
                     files, run_dir(run["id"]), session_id=run["session_id"])
     ex.check()
     _write(run, "05-analysis.md", storage.strip_chat_wrappers(answer))
-    return f"{len(answer):,} ký tự, dùng {len(files) - 1} nguồn bằng chứng"
+    return t("note.analyze", chars=len(answer), sources=len(files) - 1)
 
 
 def step_format(run, cfg, ex):
     if not _path(run, "05-analysis.md").exists():
-        raise RuntimeError("Chạy bước AI phân tích trước")
+        raise RuntimeError(t("err.need_analyze"))
     link = f"{cfg['jira_browse_url'].rstrip('/')}/{run['issue']}"
     raw = ai.ask(cfg, (f"Jira issue {run['issue']} ({link}). Apply the attached report instruction report.md to the attached "
                        "analysis 05-analysis.md. Return only the single fenced json block described in report.md."),
@@ -433,14 +527,14 @@ def step_format(run, cfg, ex):
     try:
         base = storage.parse_step5_storage_response(candidate)
     except Exception as exc:
-        log(f"Decode cục bộ: {exc} → refine trên phản hồi gốc")
+        log(t("log.decode", error=exc))
         base = raw
     try:
         report = storage.normalize_storage_report(base)
-        log("Format hợp lệ sau khi sửa cục bộ (không cần gọi AI refine)")
-        mode = "sửa cục bộ"
+        log(t("log.local_ok"))
+        mode = t("note.format_local")
     except Exception as exc:
-        log(f"Sửa cục bộ chưa đủ ({exc}) → refine từng đoạn bằng AI")
+        log(t("log.local_fail", error=exc))
         frag_dir = _path(run, "06-refine")
         frag_dir.mkdir(exist_ok=True)
         instruction = _instruction("refine.md").read_text(encoding="utf-8")
@@ -456,11 +550,11 @@ def step_format(run, cfg, ex):
         refined = refine_report(base, llm_call, max_input_tokens=6000, max_output_tokens=4000, reserve_tokens=1500,
                                 log=log, cancel=ex.check)
         report = storage.normalize_storage_report(refined)
-        mode = "refine bằng AI"
+        mode = t("note.format_ai")
     _write(run, "06-refine.log", "\n".join(refine_log) + "\n")
     _write(run, "06-report.xhtml", report)
     _write(run, "06-report.preview.html", _preview_page(report, run["issue"]))
-    return f"XHTML hợp lệ ({mode}), {len(report):,} ký tự"
+    return t("note.format", mode=mode, chars=len(report))
 
 
 def _preview_page(storage_xhtml, key):
@@ -471,11 +565,11 @@ def _preview_page(storage_xhtml, key):
 
 def step_collab(run, cfg, ex):
     if not _path(run, "06-report.xhtml").exists():
-        raise RuntimeError("Chạy bước AI format trước")
+        raise RuntimeError(t("err.need_format"))
     report = storage.normalize_storage_report(_path(run, "06-report.xhtml").read_text(encoding="utf-8"))
     space = (cfg.get("collab_space_key") or "").strip()
     if not space:
-        raise RuntimeError("Chưa có Collab space key (⚙ Cấu hình)")
+        raise RuntimeError(t("err.no_space"))
     title = f"{run['issue']} - {run.get('summary') or 'Ticket analysis'}"[:240]
     result = collab.publish(space, title, report, (cfg.get("collab_parent_id") or "").strip(), log=lambda m: _log(run, m))
     url = result.get("url") or ""
@@ -484,7 +578,7 @@ def step_collab(run, cfg, ex):
         url = f"{base}/pages/viewpage.action?pageId={result['page_id']}"
     run["collab"] = {"action": result["action"], "page_id": result.get("page_id"), "url": url, "title": title}
     _write(run, "07-collab.json", json.dumps({**run["collab"], "result": result.get("result")}, ensure_ascii=False, indent=2, default=str))
-    return ("Đã tạo trang" if result["action"] == "created" else "Đã cập nhật trang") + (f" {result.get('page_id')}" if result.get("page_id") else "")
+    return (t("note.created") if result["action"] == "created" else t("note.updated")) + (f" {result.get('page_id')}" if result.get("page_id") else "")
 
 
 RUNNERS = {"jira": step_jira, "understand": step_understand, "log": step_log, "graph": step_graph,
@@ -496,4 +590,4 @@ APPLICABLE = {
     "graph": lambda r: bool(r["inputs"]["source_dir"]),
     "analyze": lambda r: True, "format": lambda r: True, "collab": lambda r: True,
 }
-SKIP_REASON = {"understand": "Không có file log", "log": "Không có file log", "graph": "Không chọn folder source"}
+SKIP_REASON = {"understand": "note.skip_nolog", "log": "note.skip_nolog", "graph": "note.skip_nosrc"}

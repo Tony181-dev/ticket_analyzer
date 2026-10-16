@@ -139,6 +139,7 @@ def _resolve_command(command):
 def child_env(extra=None):
     env = {**os.environ, **(extra or {})}
     env["PATH"] = str(paths.SCRIPTS) + os.pathsep + env.get("PATH", "")
+    env.setdefault("PYTHONUTF8", "1")
     env.setdefault("PYTHONIOENCODING", "utf-8")
     # Corporate proxies re-sign TLS; uv must trust the OS certificate store.
     env.setdefault("UV_NATIVE_TLS", "1")

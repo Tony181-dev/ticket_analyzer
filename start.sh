@@ -10,7 +10,7 @@ if [ ! -x .venv/bin/python ]; then
   done
   [ -n "$PY" ] || { echo "Python 3.10+ is required: https://www.python.org/downloads/"; exit 1; }
   echo "[Ticket Analyzer] creating .venv ..."
-  "$PY" -m venv .venv
+  "$PY" -m venv --system-site-packages .venv  # reuse what the base Python already has
 fi
-.venv/bin/python -m pip install -q -r requirements.txt || echo "[!] pip install failed - use Setup in the UI to retry."
+.venv/bin/python -c "import playwright, uv" 2>/dev/null || .venv/bin/python -m pip install -q -r requirements.txt || echo "[!] pip install failed - use Setup in the UI to retry."
 exec .venv/bin/python -m app

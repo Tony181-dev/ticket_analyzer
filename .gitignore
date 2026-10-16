@@ -7,3 +7,5 @@ __pycache__/
 .env
 # legacy single-file source dump (internal code)
 plantodo.md
+dist/
+build/

@@ -11,6 +11,7 @@ import uuid
 
 from .. import paths
 from ..mcp import child_env
+from ..runtime import tool_cmd
 
 TIMEOUTS = {"chat": 900, "login": 360, "status": 90, "logout": 60, "ping": 60, "sessions.list": 30, "shutdown": 10}
 
@@ -35,8 +36,8 @@ class M365Worker:
             return
         paths.M365_SESSIONS.mkdir(parents=True, exist_ok=True)
         self.proc = subprocess.Popen(
-            [paths.PYTHON, "-u", str(paths.M365_WORKER)],
-            cwd=str(paths.M365_WORKER.parent),
+            tool_cmd("m365-worker"),
+            cwd=str(paths.ROOT),
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             env=child_env({"PYTHONUNBUFFERED": "1", "M365_SESSIONS_DIR": str(paths.M365_SESSIONS)}),
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),

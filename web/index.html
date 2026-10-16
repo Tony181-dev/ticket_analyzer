@@ -13,18 +13,27 @@
       <img src="/static/icon.svg" alt="" width="28" height="28">
       <div>
         <div class="brand-name">Ticket Analyzer</div>
-        <div class="brand-sub">Jira → AI → Collab</div>
+        <div class="brand-sub" data-i18n="brand.sub">Jira → AI → Collab</div>
       </div>
     </div>
-    <div class="mode" role="radiogroup" aria-label="Chế độ AI">
+    <div class="mode seg" role="radiogroup" data-i18n-title="mode.label">
       <button class="mode-btn" data-mode="m365" role="radio">M365 Copilot</button>
       <button class="mode-btn" data-mode="copilot" role="radio">Copilot CLI</button>
     </div>
+    <label class="model-pick" data-i18n-title="model.label">
+      <svg viewBox="0 0 24 24" width="16" height="16"><use href="#s-analyze"/></svg>
+      <input id="modelInput" list="modelList" autocomplete="off" spellcheck="false">
+      <datalist id="modelList"></datalist>
+    </label>
     <div class="top-actions">
-      <button id="setupPill" class="pill" title="Kiểm tra & cài đặt môi trường">
-        <span class="dot"></span><span id="setupText">Đang kiểm tra…</span>
+      <div class="seg lang" role="radiogroup" data-i18n-title="lang.label">
+        <button class="lang-btn" data-lang="vi" role="radio">VI</button>
+        <button class="lang-btn" data-lang="en" role="radio">EN</button>
+      </div>
+      <button id="setupPill" class="pill" data-i18n-title="setup.title">
+        <span class="dot"></span><span id="setupText" data-i18n="setup.checking">Đang kiểm tra…</span>
       </button>
-      <button id="settingsBtn" class="icon-btn" title="Cấu hình" aria-label="Cấu hình">
+      <button id="settingsBtn" class="icon-btn" data-i18n-title="settings.title">
         <svg viewBox="0 0 24 24" width="20" height="20"><use href="#i-sliders"/></svg>
       </button>
     </div>
@@ -32,37 +41,40 @@
 
   <div class="layout">
     <aside class="history">
-      <button id="newRun" class="btn btn-primary btn-block">+ Ticket mới</button>
-      <div class="history-title">Lịch sử</div>
+      <button id="newRun" class="btn btn-primary btn-block" data-i18n="history.new">+ Ticket mới</button>
+      <div class="history-head">
+        <span class="history-title" data-i18n="history.title">Lịch sử</span>
+        <button class="link-btn" id="clearHistory" data-i18n="history.reset" data-i18n-title="history.reset">Xoá</button>
+      </div>
       <ul id="runList" class="run-list"></ul>
+      <div class="credit">Ticket Analyzer · <span data-i18n="credit.by">tác giả</span> <strong>hoang6.nguyen</strong></div>
     </aside>
 
     <main class="main">
       <section class="card input-card">
         <div class="field grow">
-          <label for="issue">Jira ticket</label>
-          <input id="issue" placeholder="ABC-1234 hoặc dán link Jira" autocomplete="off">
+          <label for="issue" data-i18n="in.issue">Jira ticket</label>
+          <input id="issue" data-i18n-ph="in.issue.ph" autocomplete="off">
         </div>
         <div class="field grow2">
-          <label>File log <span class="muted">(tuỳ chọn)</span></label>
+          <label><span data-i18n="in.logs">File log</span> <span class="muted" data-i18n="in.optional">(tuỳ chọn)</span></label>
           <div class="picker">
-            <div id="logChips" class="chips"><span class="muted small">Chưa chọn file log</span></div>
-            <button class="btn btn-ghost" id="pickLogs">Chọn file…</button>
+            <div id="logChips" class="chips"></div>
+            <button class="btn btn-ghost" id="pickLogs" data-i18n="in.pickLogs">Chọn file…</button>
           </div>
+          <label class="check small-check"><input type="checkbox" id="autoAtt"> <span data-i18n="in.autoAtt"></span></label>
         </div>
         <div class="field grow2">
-          <label for="source">Folder source code <span class="muted">(tuỳ chọn)</span></label>
+          <label for="source"><span data-i18n="in.source">Folder source code</span> <span class="muted" data-i18n="in.optional">(tuỳ chọn)</span></label>
           <div class="picker">
             <input id="source" placeholder="D:\src\project" autocomplete="off">
-            <button class="btn btn-ghost" id="pickSource">Chọn folder…</button>
+            <button class="btn btn-ghost" id="pickSource" data-i18n="in.pickSource">Chọn folder…</button>
           </div>
         </div>
         <div class="run-actions">
-          <button id="runAll" class="btn btn-primary btn-lg">
-            <svg viewBox="0 0 24 24" width="18" height="18"><use href="#i-play"/></svg> Chạy toàn bộ
-          </button>
+          <button id="runAll" class="btn btn-primary btn-lg"></button>
           <button id="stopBtn" class="btn btn-danger btn-lg" hidden>
-            <svg viewBox="0 0 24 24" width="18" height="18"><use href="#i-stop"/></svg> Dừng
+            <svg viewBox="0 0 24 24" width="18" height="18"><use href="#i-stop"/></svg> <span data-i18n="run.stop">Dừng</span>
           </button>
         </div>
       </section>
@@ -70,21 +82,24 @@
       <section class="card flow-card">
         <div class="flow-head">
           <div>
-            <h2 id="runTitle">Ticket mới</h2>
-            <div id="runSub" class="muted small">Nhập ticket rồi bấm “Chạy toàn bộ”. Bấm vào từng bước để xem file.</div>
+            <h2 id="runTitle"></h2>
+            <div id="runSub" class="muted small"></div>
           </div>
           <div class="flow-head-actions">
-            <a id="collabLink" class="btn btn-ghost" target="_blank" rel="noopener" hidden>Mở trang Collab ↗</a>
-            <button id="openFolder" class="btn btn-ghost" hidden>Mở thư mục</button>
+            <a id="collabLink" class="btn btn-ghost" target="_blank" rel="noopener" hidden data-i18n="run.openCollab">Mở trang Collab ↗</a>
+            <button id="openFolder" class="btn btn-ghost" hidden data-i18n="run.openFolder">Mở thư mục</button>
           </div>
         </div>
         <ol id="flow" class="flow"></ol>
       </section>
 
       <section class="card console-card">
-        <button class="console-head" id="consoleToggle" aria-expanded="true">
-          <span>Nhật ký</span><span class="muted small" id="consoleCount"></span>
-        </button>
+        <div class="console-head">
+          <button class="console-toggle" id="consoleToggle" aria-expanded="true">
+            <span data-i18n="console.title">Nhật ký</span><span class="muted small" id="consoleCount"></span>
+          </button>
+          <button class="link-btn" id="clearConsole" data-i18n="console.clear">Xoá</button>
+        </div>
         <pre id="console" class="console"></pre>
       </section>
     </main>
@@ -98,15 +113,15 @@
         <h3 id="drawerTitle"></h3>
         <div id="drawerStatus"></div>
       </div>
-      <button class="icon-btn" id="drawerClose" aria-label="Đóng">✕</button>
+      <button class="icon-btn" id="drawerClose" data-i18n-title="drawer.close">✕</button>
     </div>
     <div id="drawerExtra"></div>
     <div class="tabs" id="drawerTabs"></div>
     <div class="toolbar" id="drawerToolbar"></div>
     <div class="viewer" id="viewer"></div>
     <div class="drawer-foot">
-      <button class="btn btn-ghost" id="runOnly">Chạy riêng bước này</button>
-      <button class="btn btn-primary" id="runFrom">Chạy từ bước này →</button>
+      <button class="btn btn-ghost" id="runOnly" data-i18n="drawer.runOnly">Chạy riêng bước này</button>
+      <button class="btn btn-primary" id="runFrom" data-i18n="drawer.runFrom">Chạy từ bước này →</button>
     </div>
   </aside>
   <div id="scrim" class="scrim" hidden></div>
@@ -115,24 +130,24 @@
   <div id="setupModal" class="modal" hidden>
     <div class="modal-box">
       <div class="modal-head">
-        <h3>Cài đặt môi trường</h3>
-        <button class="icon-btn" data-close aria-label="Đóng">✕</button>
+        <h3 data-i18n="su.title">Cài đặt môi trường</h3>
+        <button class="icon-btn" data-close data-i18n-title="drawer.close">✕</button>
       </div>
-      <p class="muted small">App tự kiểm tra và tự cài những gì còn thiếu. Bạn chỉ cần nhập token và đăng nhập.</p>
+      <p class="muted small" data-i18n="su.intro"></p>
       <div class="setup-actions">
-        <button class="btn btn-primary" id="fixAll">Tự sửa tất cả</button>
-        <button class="btn btn-ghost" id="recheck">Kiểm tra lại</button>
+        <button class="btn btn-primary" id="fixAll" data-i18n="su.fixAll">Tự sửa tất cả</button>
+        <button class="btn btn-ghost" id="recheck" data-i18n="su.recheck">Kiểm tra lại</button>
       </div>
       <ul id="checkList" class="check-list"></ul>
       <form id="tokenForm" class="token-form" hidden>
-        <div class="token-title">Token Jira / Collab <span class="muted small">(Personal Access Token, lưu trên máy này)</span></div>
-        <div class="field"><label for="jiraToken">Jira token</label><input id="jiraToken" type="password" autocomplete="off"></div>
-        <div class="field"><label for="collabToken">Collab token</label><input id="collabToken" type="password" autocomplete="off"></div>
-        <details class="small"><summary>Đổi URL</summary>
-          <div class="field"><label for="jiraUrl">Jira URL</label><input id="jiraUrl"></div>
-          <div class="field"><label for="collabUrl">Collab URL</label><input id="collabUrl"></div>
+        <div class="token-title"><span data-i18n="su.tokens">Token Jira / Collab</span> <span class="muted small" data-i18n="su.tokensHint"></span></div>
+        <div class="field"><label for="jiraToken" data-i18n="su.jiraToken">Jira token</label><input id="jiraToken" type="password" autocomplete="off"></div>
+        <div class="field"><label for="collabToken" data-i18n="su.collabToken">Collab token</label><input id="collabToken" type="password" autocomplete="off"></div>
+        <details class="small"><summary data-i18n="su.changeUrl">Đổi URL</summary>
+          <div class="field"><label for="jiraUrl" data-i18n="su.jiraUrl">Jira URL</label><input id="jiraUrl"></div>
+          <div class="field"><label for="collabUrl" data-i18n="su.collabUrl">Collab URL</label><input id="collabUrl"></div>
         </details>
-        <button class="btn btn-primary" type="submit">Lưu & kiểm tra kết nối</button>
+        <button class="btn btn-primary" type="submit" data-i18n="su.saveTokens">Lưu & kiểm tra kết nối</button>
       </form>
       <pre id="doctorLog" class="console small-console"></pre>
     </div>
@@ -142,20 +157,21 @@
   <div id="settingsModal" class="modal" hidden>
     <form class="modal-box" id="settingsForm">
       <div class="modal-head">
-        <h3>Cấu hình</h3>
-        <button class="icon-btn" type="button" data-close aria-label="Đóng">✕</button>
+        <h3 data-i18n="settings.title">Cấu hình</h3>
+        <button class="icon-btn" type="button" data-close data-i18n-title="drawer.close">✕</button>
       </div>
       <div class="grid2">
-        <div class="field"><label for="s_space">Collab space key</label><input id="s_space" name="collab_space_key"></div>
-        <div class="field"><label for="s_parent">Parent page ID <span class="muted">(tuỳ chọn)</span></label><input id="s_parent" name="collab_parent_id"></div>
-        <div class="field"><label for="s_m365">Model M365</label><input id="s_m365" name="m365_model"></div>
-        <div class="field"><label for="s_cli">Model Copilot CLI <span class="muted">(trống = mặc định)</span></label><input id="s_cli" name="copilot_model" placeholder="vd: claude-sonnet-4.5"></div>
-        <div class="field"><label for="s_refine">Model refine format <span class="muted">(CLI)</span></label><input id="s_refine" name="refine_model" placeholder="vd: gpt-5-mini"></div>
-        <div class="field"><label for="s_budget">Token tối đa cho log brief</label><input id="s_budget" name="log_budget_tokens" type="number" min="2000" step="1000"></div>
+        <div class="field"><label for="s_space" data-i18n="cfg.space">Collab space key</label><input id="s_space" name="collab_space_key"></div>
+        <div class="field"><label for="s_parent"><span data-i18n="cfg.parent">Parent page ID</span> <span class="muted" data-i18n="in.optional"></span></label><input id="s_parent" name="collab_parent_id"></div>
+        <div class="field"><label for="s_m365" data-i18n="cfg.m365">Model M365</label><input id="s_m365" name="m365_model"></div>
+        <div class="field"><label for="s_cli"><span data-i18n="cfg.cli">Model Copilot CLI</span> <span class="muted" data-i18n="cfg.cliHint"></span></label><input id="s_cli" name="copilot_model" placeholder="claude-sonnet-4.5"></div>
+        <div class="field"><label for="s_refine"><span data-i18n="cfg.refine">Model refine format</span> <span class="muted">(CLI)</span></label><input id="s_refine" name="refine_model" placeholder="gpt-5-mini"></div>
+        <div class="field"><label for="s_budget" data-i18n="cfg.budget">Token tối đa cho log brief</label><input id="s_budget" name="log_budget_tokens" type="number" min="2000" step="1000"></div>
+        <div class="field span2"><label for="s_dl"><span data-i18n="cfg.download">Thư mục tải đính kèm</span> <span class="muted" data-i18n="cfg.downloadHint"></span></label><input id="s_dl" name="download_dir"></div>
       </div>
-      <label class="check"><input type="checkbox" name="review_before_publish"> Dừng để duyệt report trước khi đăng Collab</label>
-      <label class="check"><input type="checkbox" name="m365_headless"> Chạy M365 ẩn (headless)</label>
-      <div class="modal-foot"><button class="btn btn-primary" type="submit">Lưu</button></div>
+      <label class="check"><input type="checkbox" name="review_before_publish"> <span data-i18n="cfg.review"></span></label>
+      <label class="check"><input type="checkbox" name="m365_headless"> <span data-i18n="cfg.headless"></span></label>
+      <div class="modal-foot"><button class="btn btn-primary" type="submit" data-i18n="cfg.save">Lưu</button></div>
     </form>
   </div>
 
@@ -181,6 +197,7 @@
       <symbol id="s-collab" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M12 15V4m0 0L8 8m4-4 4 4M5 14v4.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V14"/></symbol>
     </defs>
   </svg>
+  <script src="/static/i18n.js"></script>
   <script src="/static/markdown.js"></script>
   <script src="/static/app.js"></script>
 </body>

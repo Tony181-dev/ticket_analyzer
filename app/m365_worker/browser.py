@@ -3,13 +3,14 @@ Wraps Playwright to drive the M365 Copilot web chat UI (https://m365.cloud.micro
 composer across page frames, selecting the required chat model, and sending prompts with attachments while reading back the assistant's response and conversation URL. It is used exclusively by worker.py.
 """
 import os
+import re
 import shutil
 import time
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 URL = "https://m365.cloud.microsoft/chat"
 PROFILE = Path.home() / ".cache" / "consult_with_copilot" / "browser_profile"
-DEFAULT_MODEL = "GPT 5.6 Sol Think deeper"
+DEFAULT_MODEL = "GPT 5.6 Sol Think deeper"  # legacy; the app passes the chosen model
 MODEL_SELECT_ATTEMPTS = 3
 def launch_args():
     # Must stay identical to setup.py's launch_args() so the profile behaves the same way
@@ -210,42 +211,37 @@ class Browser:
                 except Exception:
                     pass
         return None
-    def _option(self, page, wait_ms=5000):
+    def _option(self, page, name=DEFAULT_MODEL, wait_ms=5000):
+        """Visible menu row for model `name` (case-insensitive text match)."""
+        name = " ".join((name or DEFAULT_MODEL).split())
+        legacy = name.casefold() == DEFAULT_MODEL.casefold()
         deadline = time.time() + wait_ms / 1000
         while time.time() < deadline:
             for root in self.roots(page):
-                try:
-                    mark = root.locator(
-                        '[data-testid="checkmark-Gpt_5_6_Reasoning"]'
-                    ).first
-                    if mark.count():
-                        row = mark.locator(
-                            "xpath=ancestor::*[@role='menuitemradio'][1]"
-                        ).first
-                        if row.count() and row.is_visible():
-                            return row
-                except Exception:
-                    pass
-                selectors = (
-                    '[role="listbox"] [role="menuitemradio"]:has-text("GPT 5.6 Sol Think deeper")',
-                    '[role="menuitemradio"]:has-text("GPT 5.6 Sol Think deeper")',
-                )
-                for selector in selectors:
+                if legacy:
                     try:
-                        matches = root.locator(selector)
+                        mark = root.locator('[data-testid="checkmark-Gpt_5_6_Reasoning"]').first
+                        if mark.count():
+                            row = mark.locator("xpath=ancestor::*[@role='menuitemradio'][1]").first
+                            if row.count() and row.is_visible():
+                                return row
+                    except Exception:
+                        pass
+                for role in ("menuitemradio", "menuitem", "option"):
+                    try:
+                        matches = root.get_by_role(role, name=re.compile(re.escape(name), re.I))
                         for index in range(min(matches.count(), 10)):
-                            if matches.nth(index).is_visible():
-                                return matches.nth(index)
+                            item = matches.nth(index)
+                            if item.is_visible() and (item.get_attribute("aria-haspopup") or "") != "menu":
+                                return item
                     except Exception:
                         pass
                 try:
-                    matches = root.get_by_text(DEFAULT_MODEL, exact=True)
+                    matches = root.get_by_text(re.compile(r"^\s*" + re.escape(name) + r"\s*$", re.I))
                     for index in range(min(matches.count(), 10)):
                         item = matches.nth(index)
                         if item.is_visible():
-                            row = item.locator(
-                                "xpath=ancestor::*[@role='menuitemradio'][1]"
-                            ).first
+                            row = item.locator("xpath=ancestor::*[@role='menuitemradio' or @role='menuitem' or @role='option'][1]").first
                             return row if row.count() else item
                 except Exception:
                     pass
@@ -257,10 +253,22 @@ class Browser:
             page.wait_for_timeout(200)
         except Exception:
             pass
+    def _menu_open(self, page):
+        if self._trigger(page):
+            return True
+        for root in self.roots(page):
+            try:
+                items = root.locator('[role="menuitemradio"]')
+                for index in range(min(items.count(), 20)):
+                    if items.nth(index).is_visible():
+                        return True
+            except Exception:
+                pass
+        return False
     def _open_model_menu(self, page):
         # The picker button label changes with the selected model, so a text selector is
-        # unreliable. Success is defined as the GPT submenu trigger becoming visible.
-        if self._trigger(page):
+        # unreliable. Success = a model menu (GPT submenu trigger or model radio items) is visible.
+        if self._menu_open(page):
             return True
         named = (
             'button[aria-label="Model Selector"]',
@@ -285,46 +293,44 @@ class Browser:
                             continue
                         button.click(timeout=1500)
                         page.wait_for_timeout(400)
-                        if self._trigger(page):
+                        if self._menu_open(page):
                             return True
                         page.keyboard.press("Escape")
                         page.wait_for_timeout(200)
                     except Exception:
                         pass
         return False
-    def _select_model_once(self, page):
+    def _select_model_once(self, page, name):
         if not self._open_model_menu(page):
-            raise RuntimeError("Model picker button / GPT submenu trigger not found")
-        trigger = self._trigger(page)
-        if not trigger:
-            raise RuntimeError("GPT OpenAI submenu trigger not found")
-        expanded = (trigger.get_attribute("aria-expanded") or "").lower() == "true"
-        if not expanded:
-            try:
-                trigger.hover(timeout=1500)
-                page.wait_for_timeout(250)
-            except Exception:
-                pass
-            expanded = (trigger.get_attribute("aria-expanded") or "").lower() == "true"
-            if not expanded:
-                trigger.click(timeout=3000)
-                page.wait_for_timeout(350)
-        option = self._option(page, 6000)
+            raise RuntimeError("Model picker not found")
+        option = self._option(page, name, 1500)  # newer pickers list models at the top level
         if not option:
-            raise RuntimeError(f"{DEFAULT_MODEL} option not found after opening GPT submenu")
+            trigger = self._trigger(page)
+            if not trigger:
+                raise RuntimeError(f"Model {name!r} not found in the picker")
+            if (trigger.get_attribute("aria-expanded") or "").lower() != "true":
+                try:
+                    trigger.hover(timeout=1500)
+                    page.wait_for_timeout(250)
+                except Exception:
+                    pass
+                if (trigger.get_attribute("aria-expanded") or "").lower() != "true":
+                    trigger.click(timeout=3000)
+                    page.wait_for_timeout(350)
+            option = self._option(page, name, 6000)
+        if not option:
+            raise RuntimeError(f"Model {name!r} not found in the picker (check the exact name shown in M365)")
         if (option.get_attribute("aria-checked") or "").lower() != "true":
             option.click(timeout=3000)
             page.wait_for_timeout(500)
-        return DEFAULT_MODEL
+        return name
     def select_model(self, page, name=DEFAULT_MODEL, attempts=MODEL_SELECT_ATTEMPTS):
         requested = " ".join((name or DEFAULT_MODEL).split())
-        if requested.casefold() != DEFAULT_MODEL.casefold():
-            raise RuntimeError(f"Only {DEFAULT_MODEL} is supported (received {requested!r})")
         attempts = max(1, int(attempts))
         last_error = None
         for attempt in range(1, attempts + 1):
             try:
-                selected = self._select_model_once(page)
+                selected = self._select_model_once(page, requested)
                 self._dismiss_model_menu(page)
                 return selected
             except Exception as error:
@@ -332,9 +338,7 @@ class Browser:
                 self._dismiss_model_menu(page)
                 if attempt < attempts:
                     page.wait_for_timeout(500 * attempt)
-        raise RuntimeError(
-            f"Unable to select {DEFAULT_MODEL} after {attempts} attempts: {last_error}"
-        )
+        raise RuntimeError(f"Unable to select {requested} after {attempts} attempts: {last_error}")
     def file_input(self, page):
         for root in self.roots(page):
             try:

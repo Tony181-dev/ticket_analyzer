@@ -6,6 +6,9 @@ for stream in (sys.stdout, sys.stderr):
     except (AttributeError, ValueError):
         pass
 
-from .server import main  # noqa: E402
+from app.runtime import run_tool  # noqa: E402  (absolute: also works as the PyInstaller entry script)
 
-main()
+if not run_tool(sys.argv[1:]):
+    from app.server import main  # noqa: E402
+
+    main()
