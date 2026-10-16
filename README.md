@@ -53,6 +53,19 @@ Mạng công ty chặn SSL: `start.bat` và Setup tự xử lý bằng chứng c
 | Model | Chọn theo tên hiển thị trong M365 (mặc định GPT 6 Luna) | `--model`, để trống = auto |
 | Đăng nhập | Nút “Đăng nhập M365” | `copilot login` hoặc `gh auth login` |
 
+## Bộ cài (Setup) và gỡ cài đặt
+
+```
+build_installer.bat            # build EXE rồi tạo bộ cài
+build_installer.bat --skip-build   # dùng lại dist\TicketAnalyzer đã build
+```
+
+Kết quả: `dist\TicketAnalyzer-Setup-<version>.exe` (Inno Setup; script tự cài Inno Setup qua winget nếu thiếu).
+- Cài theo user, **không cần admin**, vào `%LOCALAPPDATA%\Programs\TicketAnalyzer`. Tạo shortcut Start Menu, tuỳ chọn Desktop.
+- Dữ liệu lưu ở `%LOCALAPPDATA%\TicketAnalyzer`; cài bản mới đè lên không mất lịch sử/token.
+- **Gỡ cài đặt**: Settings → Apps → Ticket Analyzer, hoặc Start Menu → *Uninstall Ticket Analyzer*.
+  Trình gỡ tự tắt app đang chạy và hỏi có xoá luôn dữ liệu (lịch sử, cấu hình, token) hay không.
+
 ## Đóng gói EXE để chia sẻ
 
 ```

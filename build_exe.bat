@@ -31,7 +31,9 @@ echo [2/3] Dong goi TicketAnalyzer.exe...
 if errorlevel 1 ( echo [!] PyInstaller loi. & exit /b 1 )
 copy /y README.md dist\TicketAnalyzer\README.md >nul
 
-for /f %%V in ('%VPY% -c "import app; print(app.__version__)"') do set VER=%%V
+set "VER="
+for /f "delims=" %%V in ('call %VPY% -c "import app; print(app.__version__)"') do set "VER=%%V"
+if not defined VER ( echo [!] Khong doc duoc phien ban app. & exit /b 1 )
 set "ZIP=dist\TicketAnalyzer-%VER%-win64.zip"
 echo [3/3] Nen %ZIP% ...
 if exist "%ZIP%" del /q "%ZIP%"

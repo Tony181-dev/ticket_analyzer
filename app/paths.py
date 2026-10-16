@@ -31,7 +31,12 @@ if FROZEN and os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "0") == "0":
 def _default_data():
     if not FROZEN:
         return ROOT / "data"
-    beside = Path(sys.executable).resolve().parent / "data"
+    exe_dir = Path(sys.executable).resolve().parent
+    if (exe_dir / "installed.flag").exists():  # written by the Setup installer
+        # Installed copy: keep user data out of the program folder so upgrades never touch it
+        # and the uninstaller can offer to remove it separately.
+        return Path(os.getenv("LOCALAPPDATA", Path.home())) / "TicketAnalyzer" / "data"
+    beside = exe_dir / "data"  # portable zip: data next to the exe
     try:
         beside.mkdir(parents=True, exist_ok=True)
         probe = beside / ".write-test"

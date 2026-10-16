@@ -36,6 +36,31 @@ try:  # bundle uv/uvx so mcp-atlassian runs without installing anything
 except Exception as exc:  # the app falls back to a uvx found on PATH
     print("WARNING: uv not bundled:", exc)
 
+# Windows file properties (Details tab): author / product / version.
+import app as _app
+from PyInstaller.utils.win32.versioninfo import (FixedFileInfo, StringFileInfo, StringStruct, StringTable,
+                                                 VarFileInfo, VarStruct, VSVersionInfo)
+_ver = tuple(int(x) for x in (_app.__version__.split(".") + ["0"] * 4)[:4])
+_version_file = Path(workpath) / "version_info.txt"
+_version_file.parent.mkdir(parents=True, exist_ok=True)
+_version_file.write_text(str(VSVersionInfo(
+    ffi=FixedFileInfo(filevers=_ver, prodvers=_ver),
+    kids=[
+        StringFileInfo([StringTable("040904B0", [
+            StringStruct("CompanyName", _app.__author__),
+            StringStruct("FileDescription", "Ticket Analyzer — Jira → AI → Collab"),
+            StringStruct("FileVersion", _app.__version__),
+            StringStruct("InternalName", "TicketAnalyzer"),
+            StringStruct("LegalCopyright", "© " + _app.__author__),
+            StringStruct("OriginalFilename", "TicketAnalyzer.exe"),
+            StringStruct("ProductName", "Ticket Analyzer"),
+            StringStruct("ProductVersion", _app.__version__),
+            StringStruct("Comments", "Author: " + _app.__author__),
+        ])]),
+        VarFileInfo([VarStruct("Translation", [1033, 1200])]),
+    ],
+)), encoding="utf-8")
+
 a = Analysis(
     [str(root / "app" / "__main__.py")],
     pathex=[str(root)],
@@ -56,5 +81,7 @@ exe = EXE(
     name="TicketAnalyzer",
     console=True,  # shows the URL and lets the user stop the server with Ctrl+C
     upx=False,
+    icon=str(root / "packaging" / "icon.ico"),
+    version=str(_version_file),
 )
 coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name="TicketAnalyzer")

@@ -2,3 +2,7 @@
 *.sh text eol=lf
 *.bat text eol=crlf
 *.png binary
+
+# Inno Setup encoding/line endings
+*.iss text eol=crlf
+*.ico binary

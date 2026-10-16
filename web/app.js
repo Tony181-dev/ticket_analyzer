@@ -234,6 +234,7 @@ $('#runAll').onclick = guard(async () => {
   scheduleHistory();
 });
 $('#issue').onkeydown = (e) => { if (e.key === 'Enter') $('#runAll').click(); };
+$('#issue').oninput = () => { if (!S.run) renderFlow(); };
 $('#stopBtn').onclick = guard(() => api('/api/stop', { body: {} }));
 
 function renderButtons() {
@@ -255,23 +256,44 @@ function duration(st) {
   return sec < 60 ? `${sec}s` : `${Math.floor(sec / 60)}m${String(sec % 60).padStart(2, '0')}s`;
 }
 
+// What each step needs before it can run (besides its own inputs).
+const DEPS = { jira: [], understand: ['jira'], log: ['jira'], graph: [], analyze: ['jira'], format: ['analyze'], collab: ['format'] };
+const isDone = (id) => S.run && ['done', 'stale', 'waiting'].includes(S.run.steps[id].status);
+
+function hasInputs(id) {
+  const inp = inputs();
+  if (id === 'jira') return !!S.run || !!$('#issue').value.trim();
+  if (id === 'understand' || id === 'log') return inp.log_files.length > 0 || (!!inp.auto_attachments && !isDone('jira'));
+  if (id === 'graph') return !!inp.source_dir;
+  return true;
+}
+
+/** 'ready' = can run now, 'blocked' = waits for earlier steps; null for any other status. */
+function readiness(id, status) {
+  if (!['idle', 'stale'].includes(status)) return { kind: null, missing: [] };
+  const missing = DEPS[id].filter((d) => !isDone(d));
+  return { kind: missing.length || !hasInputs(id) ? 'blocked' : 'ready', missing };
+}
+
 function renderFlow() {
   $('#flow').innerHTML = S.state.steps.map((s, i) => {
     const st = stepState(s.id);
     let status = st.status;
-    if (!S.run && OPTIONAL[s.id]) {
-      const has = s.id === 'graph' ? !!S.draft.source_dir : S.draft.log_files.length > 0;
-      if (!has) status = 'skipped';
-    }
-    const icon = STATUS_ICON[status];
+    if (OPTIONAL[s.id] && ['idle', 'stale'].includes(status) && !hasInputs(s.id)) status = 'skipped';
+    const r = readiness(s.id, status);
+    const label = r.kind === 'ready' && status === 'idle' ? t('st.ready') : t('st.' + status);
+    const icon = r.kind === 'ready' && status === 'idle' ? 'i-play' : STATUS_ICON[status];
+    const needs = r.kind === 'blocked' && r.missing.length
+      ? `<div class="node-note muted">${esc(t('st.needs', { steps: r.missing.map((d) => t('step.' + d)).join(', ') }))}</div>` : '';
     const note = st.error ? `<div class="node-note err">${esc(st.error)}</div>`
       : st.note ? `<div class="node-note">${esc(st.note)}</div>`
-        : (status === 'skipped' && OPTIONAL[s.id] ? `<div class="node-note muted">${esc(t('opt.prefix', { why: t(OPTIONAL[s.id]) }))}</div>` : '');
+        : status === 'skipped' && OPTIONAL[s.id] ? `<div class="node-note muted">${esc(t('opt.prefix', { why: t(OPTIONAL[s.id]) }))}</div>`
+          : needs;
     const gear = status === 'running'
       ? '<span class="gear"><svg><use href="#i-gear"/></svg></span><span class="gear small"><svg><use href="#i-gear"/></svg></span>' : '';
     const publish = s.id === 'collab' && status === 'waiting'
       ? `<button class="btn btn-primary btn-sm publish-btn" data-publish>${esc(t('publish'))}</button>` : '';
-    return `<li class="node s-${status} ${S.selected === s.id ? 'selected' : ''}" data-step="${s.id}" tabindex="0">
+    return `<li class="node s-${status} ${r.kind ? 'is-' + r.kind : ''} ${S.selected === s.id ? 'selected' : ''}" data-step="${s.id}" tabindex="0">
       <div class="node-top">
         <div class="node-icon"><svg><use href="#s-${s.id}"/></svg>${gear}</div>
         <span class="node-no">${String(i + 1).padStart(2, '0')}</span>
@@ -281,7 +303,7 @@ function renderFlow() {
       ${note}
       ${publish}
       <div class="node-foot">
-        <span class="status">${icon ? `<svg><use href="#${icon}"/></svg>` : ''}${esc(t('st.' + status))}</span>
+        <span class="status">${icon ? `<svg><use href="#${icon}"/></svg>` : ''}${esc(label)}</span>
         <span class="time" data-time="${s.id}">${duration(st)}</span>
       </div>
     </li>`;
