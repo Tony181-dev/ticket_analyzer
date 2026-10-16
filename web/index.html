@@ -30,6 +30,9 @@
         <button class="lang-btn" data-lang="vi" role="radio">VI</button>
         <button class="lang-btn" data-lang="en" role="radio">EN</button>
       </div>
+      <button id="aboutBtn" class="pill about-pill" data-i18n-title="about.btn">
+        <svg viewBox="0 0 24 24" width="16" height="16"><use href="#i-info"/></svg><span data-i18n="about.btn">Mô tả hệ thống</span>
+      </button>
       <button id="setupPill" class="pill" data-i18n-title="setup.title">
         <span class="dot"></span><span id="setupText" data-i18n="setup.checking">Đang kiểm tra…</span>
       </button>
@@ -175,6 +178,17 @@
     </form>
   </div>
 
+  <!-- system overview infographic -->
+  <div id="aboutModal" class="modal" hidden>
+    <div class="modal-box about-box">
+      <div class="modal-head">
+        <h3 id="aboutTitle"></h3>
+        <button class="icon-btn" data-close data-i18n-title="drawer.close">✕</button>
+      </div>
+      <div id="aboutBody" class="about"></div>
+    </div>
+  </div>
+
   <div id="toast" class="toast" hidden></div>
 
   <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -187,6 +201,7 @@
       <symbol id="i-pause" viewBox="0 0 24 24"><path fill="currentColor" d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z"/></symbol>
       <symbol id="i-skip" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" d="M5 12h14"/></symbol>
       <symbol id="i-refresh" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" d="M19 12a7 7 0 1 1-2.1-5M19 4.5V8h-3.5"/></symbol>
+      <symbol id="i-info" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5"/></g></symbol>
       <symbol id="i-sliders" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M4 7h10M18 7h2M4 17h4M12 17h8M14 4.5v5M8 14.5v5"/></symbol>
       <symbol id="s-jira" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M6 3.5h12v17H6zM9 8h6M9 12h6M9 16h3.5"/></symbol>
       <symbol id="s-understand" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M12 3.5a8.5 8.5 0 1 0 0 17 8.5 8.5 0 0 0 0-17Zm0 4V12l3 2"/></symbol>
@@ -199,6 +214,7 @@
   </svg>
   <script src="/static/i18n.js"></script>
   <script src="/static/markdown.js"></script>
+  <script src="/static/about.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

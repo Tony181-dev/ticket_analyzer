@@ -62,6 +62,9 @@ class Server(ThreadingHTTPServer):
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "TicketAnalyzer/2"
+    # Keep-alive: the browser reuses a few connections instead of opening one per file,
+    # which avoided sporadic ERR_CONNECTION_RESET on Windows during page load.
+    protocol_version = "HTTP/1.1"
 
     def log_message(self, *_):
         pass
@@ -226,7 +229,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
-        self.send_header("Connection", "keep-alive")
+        self.send_header("Connection", "close")  # streamed until the tab goes away; no Content-Length
+        self.close_connection = True
         self.end_headers()
         q = events.subscribe()
         try:

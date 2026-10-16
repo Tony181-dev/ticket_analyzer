@@ -9,6 +9,7 @@
     vi: {
       'brand.sub': 'Jira → AI → Collab',
       'credit.by': 'tác giả',
+      'about.btn': 'Mô tả hệ thống',
       'mode.label': 'Chế độ AI',
       'lang.label': 'Ngôn ngữ',
       'setup.title': 'Kiểm tra & cài đặt môi trường',
@@ -105,6 +106,7 @@
     en: {
       'brand.sub': 'Jira → AI → Collab',
       'credit.by': 'by',
+      'about.btn': 'How it works',
       'mode.label': 'AI mode',
       'lang.label': 'Language',
       'setup.title': 'Check & set up the environment',

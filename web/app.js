@@ -604,6 +604,11 @@ for (const b of document.querySelectorAll('[data-close]')) b.onclick = closeModa
 for (const m of document.querySelectorAll('.modal')) m.onclick = (e) => { if (e.target === m) closeModals(); };
 
 $('#setupPill').onclick = () => { openModal('#setupModal'); refreshDoctor(); };
+$('#aboutBtn').onclick = () => {
+  $('#aboutTitle').textContent = About.title(I18N.lang);
+  $('#aboutBody').innerHTML = About.render(I18N.lang);
+  openModal('#aboutModal');
+};
 
 function renderChecks() {
   if (!S.doctor) return;
