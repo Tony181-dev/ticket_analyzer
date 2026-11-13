@@ -11,16 +11,20 @@ def _resolve_module(source,module,level,files):
  return None
 class CodeGraph:
  def __init__(self,root): self.root=os.path.abspath(root); self.nodes=[]; self.edges=[]; self.meta={}
- def build(self):
+ def build(self,cancel=None):
   t=time.time(); raw=[]; names=defaultdict(list); files={}
   for p in sources(self.root):
-   f,ns,es=parse(self.root,p); files[f['id']]=f; self.nodes.append(f); self.nodes.extend(ns); raw.extend(es)
+   if cancel: cancel()
+   try: f,ns,es=parse(self.root,p)
+   except (OSError,RecursionError,MemoryError): continue  # one unreadable/pathological file must not lose the graph
+   files[f['id']]=f; self.nodes.append(f); self.nodes.extend(ns); raw.extend(es)
    for n in ns: names[n['name']].append(n['id'])
   ids={n['id'] for n in self.nodes}; basenames={os.path.basename(k):k for k in files}
   for e in raw:
    target=e.get('target')
    if not target:
-    if e['kind']=='IMPORTS': target=_resolve_module(e['source'],e.get('target_name',''),e.get('level',0),files)
+    if e.get('candidates'): target=next((c for c in e['candidates'] if c in files),None)
+    elif e['kind']=='IMPORTS': target=_resolve_module(e['source'],e.get('target_name',''),e.get('level',0),files)
     else:
      q=e.get('target_name',''); target=(names.get(q) or [basenames.get(os.path.basename(q))])[0]
    if target and e['source'] in ids and target in ids and target!=e['source']: self.edges.append({'source':e['source'],'target':target,'kind':e['kind']})
@@ -42,14 +46,37 @@ class CodeGraph:
   for e in self.edges: by_edge[e['kind']]+=1
   communities=[{'id':k,'dir':dirmap.get(k,'?'),'nodes':v} for k,v in sorted(comm.items(),key=lambda x:(-x[1],x[0]))]
   return {'by_kind':dict(sorted(by_kind.items(),key=lambda x:-x[1])),'by_edge':dict(sorted(by_edge.items(),key=lambda x:-x[1])),'communities':communities}
- def to_simple(self,token_budget=150000,chars_per_token=3.5):
+ def relevance(self,focus):
+  # Score each node against what the ticket is about: its keywords (a symbol-name match counts
+  # most) and the source files the log evidence points at; direct neighbours of a hit get a little.
+  terms=[t.lower() for t in (focus or {}).get('terms',[]) if len(t)>=3]
+  files={f.replace(chr(92),'/').lower() for f in (focus or {}).get('files',[])}
+  score={}
+  if not terms and not files: return score
+  for n in self.nodes:
+   name=(n.get('name') or '').lower(); path=(n.get('file') or '').lower(); s=0
+   for t in terms:
+    if t==name: s+=6
+    elif t in name or (len(name)>=4 and name in t): s+=3
+    elif t in path: s+=1
+   if files and (path in files or any(path.endswith('/'+f) or f.endswith('/'+path) for f in files)): s+=4
+   if s: score[n['id']]=s
+  for e in self.edges:
+   a,b=e['source'],e['target']
+   if score.get(a,0)>=3 and b not in score: score[b]=1
+   elif score.get(b,0)>=3 and a not in score: score[a]=1
+  return score
+ def to_simple(self,token_budget=150000,chars_per_token=3.5,focus=None):
   # AI-friendly, token-bounded view. Keeps ALL nodes/edges when possible; degrades
   # gracefully by dropping signatures first, then trimming lowest-degree nodes.
+  # With `focus`, the nodes relevant to the ticket come first, so they are what survives a trim.
   budget=int(token_budget*chars_per_token)
-  ordered=sorted(self.nodes,key=lambda n:(-n.get('degree',0),-n.get('rank',0.0),n.get('id','')))
+  rel=self.relevance(focus)
+  ordered=sorted(self.nodes,key=lambda n:(-rel.get(n['id'],0),-n.get('degree',0),-n.get('rank',0.0),n.get('id','')))
   summary=self._summary()
   def node_obj(n,sig):
    o={'id':n['id'],'name':n.get('name'),'kind':n.get('kind'),'file':n.get('file'),'line':n.get('line',1),'deg':n.get('degree',0)}
+   if rel.get(n['id'],0)>=3: o['focus']=rel[n['id']]
    s=n.get('signature')
    if sig and s and s!=n['id'] and s!=n.get('file'): o['sig']=s
    return o
@@ -73,9 +100,13 @@ class CodeGraph:
     d=assemble(lo,False)
   d['meta']['approx_tokens']=int(size(d)/chars_per_token)
   d['meta']['truncated']=d['stats']['shown_nodes']<d['stats']['total_nodes']
+  if rel:
+   d['meta']['focus']={'terms':list((focus or {}).get('terms',[])),'files':list((focus or {}).get('files',[])),
+     'matched_nodes':sum(1 for v in rel.values() if v>=3),
+     'note':'Nodes are ordered by relevance to the ticket; "focus" on a node is its relevance score.'}
   return d
- def save_simple(self,p,token_budget=150000):
-  d=self.to_simple(token_budget); json.dump(d,open(p,'w',encoding='utf-8'),ensure_ascii=False,separators=(',',':')); return d
+ def save_simple(self,p,token_budget=150000,focus=None):
+  d=self.to_simple(token_budget,focus=focus); json.dump(d,open(p,'w',encoding='utf-8'),ensure_ascii=False,separators=(',',':')); return d
  @classmethod
  def load(cls,p):
   d=json.load(open(p,encoding='utf-8')); o=cls(d.get('meta',{}).get('root','.')); o.meta=d.get('meta',{}); o.nodes=d.get('nodes',[]); o.edges=d.get('edges',[]); return o

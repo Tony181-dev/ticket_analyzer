@@ -20,9 +20,12 @@ def dialog(kind, title):
     if kind == "folder":
         r = filedialog.askdirectory(title=title)
         out = [r] if r else []
+    elif kind == "catalog":
+        r = filedialog.askopenfilename(title=title, filetypes=[("LogSleuth catalog", "*.md *.json"), ("All files", "*.*")])
+        out = [r] if r else []
     else:
         r = filedialog.askopenfilenames(title=title, filetypes=[
-            ("Log files", "*.log *.txt *.dlt *.gz *.zip *.out *.slog *.slog2 *.trace *.err *.jsonl *.ndjson *.json"),
+            ("Log files", "*.log *.txt *.dlt *.gz *.bz2 *.xz *.zip *.tar *.tgz *.7z *.rar *.out *.slog *.slog2 *.trace *.err *.jsonl *.ndjson *.json *.csv"),
             ("All files", "*.*")])
         out = list(r)
     print(json.dumps(out))
@@ -32,9 +35,11 @@ def pick(kind):
     en = lang() == "en"
     if kind == "folder":
         title = "Choose a folder" if en else "Chọn thư mục"
+    elif kind == "catalog":
+        title = "Choose a LogSleuth catalog" if en else "Chọn LogSleuth catalog"
     else:
         title = "Choose log files" if en else "Chọn file log"
-    out = subprocess.run(tool_cmd("pick", "folder" if kind == "folder" else "files", title),
+    out = subprocess.run(tool_cmd("pick", kind if kind in ("folder", "catalog") else "files", title),
                          capture_output=True, text=True, timeout=600, cwd=str(paths.ROOT), encoding="utf-8")
     try:
         return json.loads(out.stdout.strip().splitlines()[-1])

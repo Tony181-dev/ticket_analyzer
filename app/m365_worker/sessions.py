@@ -77,7 +77,7 @@ class Store:
             oldest = min(current, key=lambda x: x.get('last_used_at', x.get('created_at', 0)))
             try: self.path(oldest['id']).unlink()
             except OSError: pass
-        item = {'id': session_id, 'created_at': now, 'last_used_at': now, 'conversation_url': conversation_url, 'model': model or 'GPT 5.6 Sol Think deeper', 'messages': []}
+        item = {'id': session_id, 'created_at': now, 'last_used_at': now, 'conversation_url': conversation_url, 'model': model or 'GPT-5.6 Sol Think Deeper', 'messages': []}
         atomic_write(self.path(session_id), item)
         return item
 
@@ -90,7 +90,7 @@ class Store:
                 try: self.path(oldest['id']).unlink()
                 except OSError: pass
             item = {'id': session_id, 'created_at': now, 'messages': []}
-        item.update({'conversation_url': url, 'model': model or item.get('model'), 'last_used_at': now})
+        item.update({'conversation_url': url or item.get('conversation_url'), 'model': model or item.get('model'), 'last_used_at': now})
         for message in messages or []:
             if isinstance(message, dict):
                 item['messages'].append({'role': str(message.get('role', 'user')), 'content': str(message.get('content', '')), 'timestamp': now})

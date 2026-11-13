@@ -18,7 +18,7 @@ if errorlevel 1 goto fail
 echo [Ticket Analyzer] Kiem tra thu vien Python...
 set "VPY=.venv\Scripts\python.exe"
 set "QUICK=--retries 1 --timeout 20"
-%VPY% -c "import playwright, uv" >nul 2>&1 && goto run
+%VPY% -c "import playwright, uv, py7zr, multivolumefile" >nul 2>&1 && goto run
 %VPY% -m pip install -q %QUICK% -r requirements.txt >nul 2>&1 && goto run
 
 rem Corporate proxies re-sign TLS. A fresh venv ships an old pip that ignores the

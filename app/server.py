@@ -7,12 +7,18 @@
   POST /api/mcp/tokens         -> save the 2-field token form
   POST /api/settings           -> patch settings
   POST /api/pick {kind}        -> native dialog
-  POST /api/runs               -> create {issue, log_files[], source_dir}
-  GET  /api/runs/<id>          -> run         POST /api/runs/<id>/start {from?, only?, publish?}
-  POST /api/runs/<id>/inputs   -> {log_files?, source_dir?}
+  POST /api/runs               -> create {issue, log_files[], source_dir, gate?, auto_attachments?, use_codegraph?,
+                                  use_infographic?, auto_publish_to_collab?, log_shift_minutes?, logsleuth?, start?}
+  GET  /api/runs/<id>          -> run
+  POST /api/runs/<id>/start    -> {from?, only?, until?, resume?, publish?}
+  POST /api/runs/<id>/inputs   -> any of the create options, to change them on an existing run
+  POST /api/runs/<id>/gate     -> answer the evidence gate {names[], time_start?, time_end?, shift_minutes?, skip_logs?, folder?}
+  POST /api/runs/<id>/attachments -> download {names[], folder?} without running the pipeline
   GET  /api/runs/<id>/files/<name>  PUT same -> raw artifact / save edit
   POST /api/runs/<id>/graph-query {q}   POST /api/runs/<id>/open-folder
   POST /api/stop
+
+Automation: docs/automation.md (this API and the `python -m app run` command line).
 """
 import json
 import mimetypes
@@ -25,10 +31,11 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlparse
 
-from . import attachments, doctor, events, mcp, paths, picker, pipeline, settings
+from . import attachments, doctor, events, explorer, mcp, paths, picker, pipeline, settings
 from .ai import copilot
 from .ai.m365 import worker as m365_worker
 from .evidence import graph as codegraph
+from .evidence import logsleuth
 from .i18n import t
 
 TYPES = {".md": "text/markdown; charset=utf-8", ".json": "application/json; charset=utf-8",
@@ -50,7 +57,7 @@ def _background(fn, *args):
 
 def _open_folder(path):
     if os.name == "nt":
-        os.startfile(str(path))  # noqa: S606 - local desktop app
+        explorer.open_folder(path)
     else:
         subprocess.Popen(["xdg-open" if os.uname().sysname != "Darwin" else "open", str(path)])
 
@@ -122,6 +129,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, state())
             if p == "/api/doctor":
                 return self._send(200, doctor.checks())
+            if p == "/api/logsleuth/catalogs":
+                return self._send(200, {"catalogs": logsleuth.list_catalogs()})
             m = re.fullmatch(r"/api/runs/([^/]+)", p)
             if m:
                 run = pipeline.get(m.group(1))
@@ -158,6 +167,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, saved)
             if p == "/api/pick":
                 return self._send(200, {"paths": picker.pick(body.get("kind"))})
+            if p == "/api/logsleuth/catalog-info":
+                return self._send(200, logsleuth.catalog_info(body.get("path") or ""))
             if p == "/api/mcp/tokens":
                 mcp.save_tokens(body)
                 _background(doctor.warm_mcp)
@@ -195,22 +206,41 @@ class Handler(BaseHTTPRequestHandler):
                 events.publish("runs_cleared", keep=keep)
                 return self._send(200, {"removed": removed, "kept": keep})
             if p == "/api/runs":
+                if pipeline.executor.busy and body.get("start", True):
+                    raise RuntimeError(t("err.busy"))  # before creating a run that could never start
                 run = pipeline.create(body.get("issue"), body.get("log_files") or [], body.get("source_dir") or "",
-                                      bool(body.get("auto_attachments")), body.get("download_dir") or "")
+                                      body.get("auto_attachments"), body.get("download_dir") or "",
+                                      body.get("use_codegraph"), body.get("logsleuth"),
+                                      body.get("use_infographic"), body.get("continue_on_optional_error"),
+                                      body.get("auto_publish_to_collab"), body.get("gate"),
+                                      body.get("log_shift_minutes"))
                 if body.get("start", True):
-                    pipeline.executor.start(run["id"])
+                    pipeline.executor.start(run["id"], until=body.get("until"))
                 return self._send(200, run)
-            m = re.fullmatch(r"/api/runs/([^/]+)/(start|inputs|graph-query|open-folder|attachments)", p)
+            m = re.fullmatch(r"/api/runs/([^/]+)/(start|inputs|gate|log-scan|graph-query|open-folder|attachments)", p)
             if m:
                 run_id, action = m.groups()
                 if action == "start":
-                    pipeline.executor.start(run_id, body.get("from"), bool(body.get("only")), bool(body.get("publish")))
+                    pipeline.executor.start(run_id, body.get("from"), bool(body.get("only")), bool(body.get("publish")),
+                                            until=body.get("until"), resume=bool(body.get("resume")))
                     return self._send(200, {"ok": True})
                 if action == "inputs":
-                    return self._send(200, pipeline.update_inputs(run_id, body.get("log_files"), body.get("source_dir"),
-                                                                  body.get("auto_attachments"), body.get("download_dir")))
+                    return self._send(200, pipeline.update_inputs(
+                        run_id, body.get("log_files"), body.get("source_dir"), body.get("auto_attachments"),
+                        body.get("download_dir"), body.get("use_codegraph"), body.get("logsleuth"),
+                        body.get("use_infographic"), body.get("continue_on_optional_error"),
+                        body.get("auto_publish_to_collab"), body.get("gate"),
+                        body["log_shift_minutes"] if "log_shift_minutes" in body else ...))
+                if action == "gate":
+                    pipeline.executor.resolve_gate(
+                        run_id, body.get("names") or [], body.get("folder"), body.get("time_start"), body.get("time_end"),
+                        body["shift_minutes"] if "shift_minutes" in body else ..., bool(body.get("skip_logs")))
+                    return self._send(202, {"ok": True})
+                if action == "log-scan":
+                    pipeline.executor.start(run_id, "log", only=True, catalog_only=True)
+                    return self._send(202, {"ok": True})
                 if action == "attachments":
-                    pipeline.executor.fetch_attachments(run_id, body.get("names") or [], body.get("analyze") or [], body.get("folder"))
+                    pipeline.executor.fetch_attachments(run_id, body.get("names") or [], body.get("folder"))
                     return self._send(202, {"ok": True})
                 if action == "graph-query":
                     return self._send(200, {"hits": codegraph.query(pipeline.read_file(run_id, "04-graph.json"), body.get("q", ""))})
@@ -258,6 +288,9 @@ def state():
         "busy_run": pipeline.executor.run_id if pipeline.executor.busy else None,
         "mcp": mcp.status(),
         "models": {"m365": settings.M365_MODELS, "copilot": settings.COPILOT_MODELS},
+        "gates": list(settings.GATES),
+        "logsleuth": {"defaults": logsleuth.DEFAULT_OPTIONS, "parsers": logsleuth.PARSERS,
+                  "max_tokens": logsleuth.MAX_BRIEF_TOKENS, "min_tokens": logsleuth.MIN_BRIEF_TOKENS},
         "default_download_dir": str(attachments.default_folder("<ISSUE>")),
     }
 
@@ -268,8 +301,8 @@ def main():
     server = Server(("127.0.0.1", port), Handler)
     url = f"http://localhost:{port}"
     print(t("srv.running", url=url), flush=True)
-    # Probe the M365 login once in the background so Setup shows the real state.
-    if settings.load()["ai_mode"] == "m365":
+    # Probe M365 login once on startup even when Copilot CLI is the selected backend.
+    if not os.getenv("TA_NO_STARTUP_PROBE"):
         _background(lambda: doctor.checks(probe_m365=True))
     if not os.getenv("TA_NO_BROWSER"):
         threading.Timer(0.8, lambda: webbrowser.open(url)).start()

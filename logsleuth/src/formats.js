@@ -584,6 +584,17 @@ function bufferToText(buf) {
   return buf.toString('utf8');
 }
 
+// NUL, U+FFFD and C0 controls (keeping \t \r \n and ESC) never appear in real log text.
+const GARBAGE_RE = /[\u0000-\u0008\u000b\u000c\u000e-\u001a\u001c-\u001f\u007f\ufffd]/g;
+
+/** True when decoded text is mostly undecodable bytes (compressed/encrypted/unknown binary). */
+function isBinaryText(text) {
+  const sample = text.slice(0, 65536);
+  if (!sample.length) return false;
+  const bad = sample.match(GARBAGE_RE);
+  return !!bad && bad.length / sample.length > 0.02;
+}
+
 function pickTextParser(sample, forced) {
   if (forced && forced !== 'auto') {
     const p = TEXT_PARSERS.find((x) => x.name === forced);
@@ -625,7 +636,11 @@ function readOne(file, forced) {
   }
 
   // ---- text --------------------------------------------------------------
-  const lines = bufferToText(buf).split(/\r?\n/);
+  const text = bufferToText(buf);
+  if (isBinaryText(text)) {
+    return { records: [], format: 'binary', note: 'not a readable log (binary/compressed/encrypted data) - skipped' };
+  }
+  const lines = text.replace(GARBAGE_RE, '').split(/\r?\n/);
   const sample = lines.filter((l) => l.trim()).slice(0, 300);
 
   let jsonHits = 0;

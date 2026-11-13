@@ -16,7 +16,7 @@ if not exist "%VPY%" (
 )
 
 echo [1/3] Chuan bi cong cu build (PyInstaller)...
-%VPY% -c "import playwright, uv, PyInstaller" >nul 2>&1 && goto build
+%VPY% -c "import playwright, uv, py7zr, multivolumefile, PyInstaller" >nul 2>&1 && goto build
 %VPY% -m pip install -q %QUICK% -r requirements.txt pyinstaller && goto build
 if not defined PY call :findpy
 if defined PY %PY% -m pip --python "%VPY%" install -q %QUICK% --upgrade pip >nul 2>&1

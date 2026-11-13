@@ -21,7 +21,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import events, mcp, paths, settings
+from . import attachments, events, mcp, paths, settings
 from .ai import copilot
 from .ai.m365 import worker as m365_worker
 from .i18n import t
@@ -162,6 +162,8 @@ def checks(probe_m365=False):
     add("node", t("dr.node"), ok, detail, fix="node")
     ok, detail = _uvx()
     add("uv", t("dr.uv"), ok, detail, fix="uv")
+    axel = attachments.axel_path()
+    add("axel", t("dr.axel"), axel, f"{attachments.axel_version(axel)} · {axel}" if axel else t("dr.axel_missing"), needed=False)
     status = mcp.status()
     for role, label in (("jira", "MCP Jira"), ("collab", "MCP Collab")):
         conf = status[role]
@@ -173,18 +175,23 @@ def checks(probe_m365=False):
     has_pw = importlib.util.find_spec("playwright") is not None
     add("playwright", t("dr.playwright"), has_pw, t("dr.installed") if has_pw else t("dr.not_installed"),
         needed=m365, fix="playwright")
-    if m365 and has_pw:
-        ok, detail = _chromium()
-        add("chromium", t("dr.chromium"), ok, detail, needed=m365, fix="chromium")
-        if probe_m365 and ok:
-            _cache["m365"] = m365_worker.check()
-        st = _cache["m365"] or m365_worker.status
-        if st.get("state") in (None, "stopped"):
-            add("m365_login", t("dr.m365_login"), False, t("dr.unchecked"), needed=m365, action="m365_login")
-        else:
-            add("m365_login", t("dr.m365_login"), st.get("authenticated"),
-                t("dr.logged_in") if st.get("authenticated") else (st.get("error") or t("dr.need_login")),
-                needed=m365, action="m365_login")
+    if m365 or probe_m365 or _cache["m365"] is not None:
+        chromium_ok, chromium_detail = _chromium() if has_pw else (False, t("dr.not_installed"))
+        if has_pw:
+            add("chromium", t("dr.chromium"), chromium_ok, chromium_detail, needed=m365, fix="chromium")
+        if probe_m365:
+            if chromium_ok:
+                _cache["m365"] = m365_worker.check()
+            else:
+                _cache["m365"] = {"state": "error", "authenticated": False, "error": chromium_detail}
+        if m365 or _cache["m365"] is not None:
+            st = _cache["m365"] or m365_worker.status
+            if st.get("state") in (None, "stopped"):
+                add("m365_login", t("dr.m365_login"), False, t("dr.unchecked"), needed=m365, action="m365_login")
+            else:
+                add("m365_login", t("dr.m365_login"), st.get("authenticated"),
+                    t("dr.logged_in") if st.get("authenticated") else (st.get("error") or t("dr.need_login")),
+                    needed=m365, action="m365_login")
 
     cli = mode == "copilot"
     if cli:

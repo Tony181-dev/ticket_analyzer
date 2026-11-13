@@ -7,11 +7,13 @@ per-action timeouts, and cancel = kill the process (restarted lazily).
 import json
 import subprocess
 import threading
+import time
 import uuid
 
 from .. import paths
 from ..mcp import child_env
 from ..runtime import tool_cmd
+from . import stopflag
 
 TIMEOUTS = {"chat": 900, "login": 360, "status": 90, "logout": 60, "ping": 60, "sessions.list": 30, "shutdown": 10}
 
@@ -28,6 +30,7 @@ class M365Worker:
         self.lock = threading.Lock()        # one request at a time
         self.cond = threading.Condition()
         self.replies = {}
+        self.images = []
         self.status = {"state": "stopped", "authenticated": False}
 
     # -- process -------------------------------------------------------------
@@ -58,18 +61,29 @@ class M365Worker:
         with self.cond:
             self.cond.notify_all()
 
-    def ask(self, action, payload=None):
+    def ask(self, action, payload=None, cancellable=False):
         with self.lock:
+            if cancellable and stopflag.requested.is_set():
+                raise M365Error("M365_CANCELLED", "M365 request cancelled")
             self._start()
             proc = self.proc
             req_id = str(uuid.uuid4())
             proc.stdin.write((json.dumps({"id": req_id, "action": action, "payload": payload or {}}) + "\n").encode("utf-8"))
             proc.stdin.flush()
             timeout = TIMEOUTS.get(action, 120)
+            deadline = time.monotonic() + timeout
+            ok = False
             with self.cond:
-                ok = self.cond.wait_for(lambda: req_id in self.replies or proc.poll() is not None, timeout)
+                while not ok and deadline > time.monotonic():
+                    ok = self.cond.wait_for(lambda: req_id in self.replies or proc.poll() is not None,
+                                            min(1.0, deadline - time.monotonic()))
+                    if not ok and cancellable and stopflag.requested.is_set():
+                        break  # Stop pressed before the kill could reach this request
                 msg = self.replies.pop(req_id, None)
             if msg is None:
+                if not ok and cancellable and stopflag.requested.is_set():
+                    self.kill()
+                    raise M365Error("M365_CANCELLED", "M365 request cancelled")
                 if not ok:
                     self.kill()
                     raise M365Error("M365_TIMEOUT", f"M365 {action} timed out after {timeout}s")
@@ -105,7 +119,8 @@ class M365Worker:
                        "authenticated": bool(result.get("authenticated"))}
         return self.status
 
-    def chat(self, prompt, files=(), session_id=None, headless=True, model=None):
+    def chat(self, prompt, files=(), session_id=None, headless=True, model=None, image_dir=None):
+        """Returns the answer text; with image_dir, also saves generated images there (see `images`)."""
         payload = {
             "model": "copilot-365-web",
             "messages": [{"role": "user", "content": prompt, "attachedFiles": [str(f) for f in files]}],
@@ -116,7 +131,11 @@ class M365Worker:
         if session_id:
             payload["session"] = {"id": session_id}
             payload["create_session"] = True
-        return str(self.ask("chat", payload).get("content") or "")
+        if image_dir:
+            payload["image_dir"] = str(image_dir)
+        result = self.ask("chat", payload, cancellable=True)
+        self.images = [str(p) for p in result.get("images") or []]
+        return str(result.get("content") or "")
 
     def shutdown(self):
         if self.proc and self.proc.poll() is None:
