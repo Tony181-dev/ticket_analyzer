@@ -15,6 +15,7 @@ LOGSLEUTH_CLI = ROOT / "logsleuth" / "cli.js"
 INSTRUCTIONS = ROOT / "instructions"
 M365_WORKER = APP / "m365_worker" / "worker.py"
 BUNDLED_BIN = ROOT / "bin"  # uv/uvx shipped inside the EXE build
+AXEL_DIR = APP / "axel-for-windows-master"  # axel.exe + cygwin1.dll, the attachment downloader
 
 if FROZEN and os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "0") == "0":
     # PyInstaller's Playwright hook points browsers *inside* the bundle; use the normal

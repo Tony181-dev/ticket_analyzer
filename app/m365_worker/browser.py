@@ -3,6 +3,7 @@ Wraps Playwright to drive the M365 Copilot web chat UI (https://m365.cloud.micro
 composer across page frames, selecting the required chat model, and sending prompts with attachments while reading back the assistant's response and conversation URL. It is used exclusively by worker.py.
 """
 import os
+import base64
 import re
 import shutil
 import time
@@ -10,8 +11,10 @@ from pathlib import Path
 from playwright.sync_api import sync_playwright
 URL = "https://m365.cloud.microsoft/chat"
 PROFILE = Path.home() / ".cache" / "consult_with_copilot" / "browser_profile"
-DEFAULT_MODEL = "GPT 5.6 Sol Think deeper"  # legacy; the app passes the chosen model
+DEFAULT_MODEL = "GPT-5.6 Sol Think Deeper"  # legacy; the app passes the chosen model
 MODEL_SELECT_ATTEMPTS = 3
+def _norm(text):
+    return re.sub(r"[^a-z0-9]+", "", (text or "").casefold())
 def launch_args():
     # Must stay identical to setup.py's launch_args() so the profile behaves the same way
     # during the interactive setup login as it does later during headless/headed automation.
@@ -26,6 +29,7 @@ class Browser:
     def __init__(self):
         self.pw = self.ctx = self.page = None
         self.mode = None
+        self.images = []
     def close(self):
         ctx, pw = self.ctx, self.pw
         self.ctx = self.page = self.pw = None
@@ -47,10 +51,8 @@ class Browser:
         # closing and reopening -- and re-authenticating -- on each request.
         if self.ctx and self.mode == bool(headless):
             try:
-                pages = [page for page in self.ctx.pages if not page.is_closed()]
-                if pages:
-                    self.page = pages[-1]
-                    return self.page
+                self.page = self._pick_page()
+                return self.page
             except Exception:
                 pass
         self.close()
@@ -64,10 +66,27 @@ class Browser:
             viewport={"width": 1440, "height": 1000},
             args=launch_args(),
         )
-        self.page = next(
-            (page for page in self.ctx.pages if not page.is_closed()), None
-        ) or self.ctx.new_page()
+        self.page = self._pick_page()
         return self.page
+    def _pick_page(self):
+        # Drive exactly one tab: the M365 chat tab if present. Restored/popup tabs are closed
+        # so the worker never types into (or leaves focus on) a stray page.
+        pages = [page for page in self.ctx.pages if not page.is_closed()]
+        if not pages:
+            return self.ctx.new_page()
+        hosts = ("m365.cloud.microsoft", "microsoft365.com", "office.com")
+        keep = next((page for page in pages if any(host in (page.url or "") for host in hosts)), pages[0])
+        for page in pages:
+            if page is not keep:
+                try:
+                    page.close()
+                except Exception:
+                    pass
+        try:
+            keep.bring_to_front()
+        except Exception:
+            pass
+        return keep
     def roots(self, page):
         try:
             return [page] + [frame for frame in page.frames if frame != page.main_frame]
@@ -196,56 +215,103 @@ class Browser:
                     last_error = error
         if last_error:
             raise last_error
-    def _trigger(self, page):
+    def _triggers(self, page, name=""):
+        """Visible submenu triggers of the model menu; the vendor matching `name` comes first."""
         selectors = (
-            '[data-test-id="gptSubMenuModelTrigger-OpenAI"]',
-            '[data-testid="gptSubMenuModelTrigger-OpenAI"]',
-            '[role="menuitem"][aria-haspopup="menu"]:has-text("GPT")',
+            '[data-test-id^="gptSubMenuModelTrigger"]',
+            '[data-testid^="gptSubMenuModelTrigger"]',
+            '[role="menuitem"][aria-haspopup="menu"]',
         )
+        found, seen = [], set()
         for root in self.roots(page):
             for selector in selectors:
                 try:
-                    match = root.locator(selector)
-                    if match.count() and match.first.is_visible():
-                        return match.first
+                    matches = root.locator(selector)
+                    for index in range(min(matches.count(), 10)):
+                        item = matches.nth(index)
+                        if not item.is_visible():
+                            continue
+                        label = _norm(item.inner_text()) or f"{selector}{index}"
+                        if label not in seen:
+                            seen.add(label)
+                            found.append((item, label))
                 except Exception:
                     pass
-        return None
+        key = _norm(name)
+        hints = ("gpt", "openai") if "gpt" in key else ("claude", "anthropic") if "claude" in key else ()
+        found.sort(key=lambda pair: 0 if any(hint in pair[1] for hint in hints) else 1)
+        return [item for item, _ in found]
     def _option(self, page, name=DEFAULT_MODEL, wait_ms=5000):
-        """Visible menu row for model `name` (case-insensitive text match)."""
+        """Visible menu row for model `name`: exact title first, then prefix, then substring."""
         name = " ".join((name or DEFAULT_MODEL).split())
+        want = _norm(name)
         legacy = name.casefold() == DEFAULT_MODEL.casefold()
         deadline = time.time() + wait_ms / 1000
-        while time.time() < deadline:
+        best, best_score = None, 0
+        while True:
             for root in self.roots(page):
-                if legacy:
+                try:
+                    rows = root.locator('[role="menuitemradio"],[role="menuitem"],[role="option"]')
+                    texts = rows.all_inner_texts()
+                except Exception:
+                    continue
+                for index, text in enumerate(texts[:60]):
+                    lines = text.strip().splitlines()
+                    key = _norm(lines[0] if lines else "")
+                    if not key:
+                        continue
+                    score = 4 if key == want else 3 if key.startswith(want) else 2 if want in key else 1 if len(key) >= 6 and want.startswith(key) else 0
+                    if score <= best_score:
+                        continue
+                    try:
+                        row = rows.nth(index)
+                        if row.is_visible() and (row.get_attribute("aria-haspopup") or "") != "menu":
+                            best, best_score = row, score
+                    except Exception:
+                        pass
+                if legacy and best_score < 4:
                     try:
                         mark = root.locator('[data-testid="checkmark-Gpt_5_6_Reasoning"]').first
                         if mark.count():
                             row = mark.locator("xpath=ancestor::*[@role='menuitemradio'][1]").first
                             if row.count() and row.is_visible():
-                                return row
+                                best, best_score = row, 4
                     except Exception:
                         pass
-                for role in ("menuitemradio", "menuitem", "option"):
-                    try:
-                        matches = root.get_by_role(role, name=re.compile(re.escape(name), re.I))
-                        for index in range(min(matches.count(), 10)):
-                            item = matches.nth(index)
-                            if item.is_visible() and (item.get_attribute("aria-haspopup") or "") != "menu":
-                                return item
-                    except Exception:
-                        pass
-                try:
-                    matches = root.get_by_text(re.compile(r"^\s*" + re.escape(name) + r"\s*$", re.I))
-                    for index in range(min(matches.count(), 10)):
-                        item = matches.nth(index)
-                        if item.is_visible():
-                            row = item.locator("xpath=ancestor::*[@role='menuitemradio' or @role='menuitem' or @role='option'][1]").first
-                            return row if row.count() else item
-                except Exception:
-                    pass
+            if best_score == 4 or time.time() >= deadline:
+                return best
             page.wait_for_timeout(150)
+    def _available(self, page):
+        names = []
+        for root in self.roots(page):
+            try:
+                for text in root.locator('[role="menuitemradio"],[role="menuitem"],[role="option"]').all_inner_texts():
+                    lines = text.strip().splitlines()
+                    if lines and lines[0].strip() not in names:
+                        names.append(lines[0].strip())
+            except Exception:
+                pass
+        return names[:12]
+    def _find_option(self, page, name):
+        option = self._option(page, name, 1500)  # newer pickers list models at the top level
+        if option:
+            return option
+        for trigger in self._triggers(page, name):
+            try:
+                if (trigger.get_attribute("aria-expanded") or "").lower() != "true":
+                    try:
+                        trigger.hover(timeout=1500)
+                        page.wait_for_timeout(250)
+                    except Exception:
+                        pass
+                    if (trigger.get_attribute("aria-expanded") or "").lower() != "true":
+                        trigger.click(timeout=3000)
+                        page.wait_for_timeout(350)
+            except Exception:
+                continue
+            option = self._option(page, name, 4000)
+            if option:
+                return option
         return None
     def _dismiss_model_menu(self, page):
         try:
@@ -254,7 +320,7 @@ class Browser:
         except Exception:
             pass
     def _menu_open(self, page):
-        if self._trigger(page):
+        if self._triggers(page):
             return True
         for root in self.roots(page):
             try:
@@ -271,13 +337,21 @@ class Browser:
         if self._menu_open(page):
             return True
         named = (
+            "#gptModeSwitcher",
+            'button[id*="ModeSwitcher" i]',
             'button[aria-label="Model Selector"]',
             'button[aria-label*="model" i]',
+            'button[aria-label*="m\u00f4 h\u00ecnh" i]',  # Vietnamese UI: "Bộ chọn mô hình"
             'button[aria-label*="Think" i]',
-            'button:has-text("Think")',
-            'button:has-text("GPT")',
+            'button[aria-haspopup="menu"]:has-text("Think")',
+            'button[aria-haspopup="menu"]:has-text("GPT")',
+            'button[aria-haspopup="menu"]:has-text("Claude")',
         )
-        generic = 'button[aria-haspopup="menu"]'
+        # Sidebar "more" buttons are menu buttons too; never probe them (a stray click can navigate away).
+        generic = (
+            'button[aria-haspopup="menu"]:not([data-chat-history-more-button-conversation-id])'
+            ':not([aria-label="Xem th\u00eam"]):not([aria-label="See more"])'
+        )
         for selector in (*named, generic):
             for root in self.roots(page):
                 try:
@@ -300,30 +374,38 @@ class Browser:
                     except Exception:
                         pass
         return False
+    def _current_model(self, page):
+        # The picker button shows the active model ("GPT-5.6 Sol Think"); its label is localized.
+        for root in self.roots(page):
+            try:
+                button = root.locator("#gptModeSwitcher").first
+                if button.count() and button.is_visible():
+                    return (button.inner_text() or "").strip() or (button.get_attribute("aria-label") or "").split(",")[0].strip()
+            except Exception:
+                pass
+        return ""
     def _select_model_once(self, page, name):
+        if _norm(self._current_model(page)) == _norm(name):
+            return name  # already active: do not touch the menu
         if not self._open_model_menu(page):
             raise RuntimeError("Model picker not found")
-        option = self._option(page, name, 1500)  # newer pickers list models at the top level
+        option = self._find_option(page, name)
         if not option:
-            trigger = self._trigger(page)
-            if not trigger:
-                raise RuntimeError(f"Model {name!r} not found in the picker")
-            if (trigger.get_attribute("aria-expanded") or "").lower() != "true":
-                try:
-                    trigger.hover(timeout=1500)
-                    page.wait_for_timeout(250)
-                except Exception:
-                    pass
-                if (trigger.get_attribute("aria-expanded") or "").lower() != "true":
-                    trigger.click(timeout=3000)
-                    page.wait_for_timeout(350)
-            option = self._option(page, name, 6000)
-        if not option:
-            raise RuntimeError(f"Model {name!r} not found in the picker (check the exact name shown in M365)")
+            shown = ", ".join(self._available(page)) or "none"
+            raise RuntimeError(f"Model {name!r} not found in the picker (visible: {shown})")
         if (option.get_attribute("aria-checked") or "").lower() != "true":
             option.click(timeout=3000)
             page.wait_for_timeout(500)
+            self._verify_model(page, name)
         return name
+    def _verify_model(self, page, name):
+        # Re-open the picker: some builds ignore the first click, so confirm the radio is checked.
+        self._dismiss_model_menu(page)
+        if not self._open_model_menu(page):
+            return
+        option = self._find_option(page, name)
+        if option and (option.get_attribute("aria-checked") or "").lower() == "false":
+            raise RuntimeError(f"Model {name!r} was clicked but is not selected")
     def select_model(self, page, name=DEFAULT_MODEL, attempts=MODEL_SELECT_ATTEMPTS):
         requested = " ".join((name or DEFAULT_MODEL).split())
         attempts = max(1, int(attempts))
@@ -449,9 +531,81 @@ class Browser:
             page = self.open(headless)
             page.goto(url, wait_until="domcontentloaded", timeout=60000)
             return page
-    def chat(self, prompt, url=None, files=None, headless=True, model=DEFAULT_MODEL):
-        target_url = url or URL
-        page = self.open_chat_page(target_url, headless)
+    def resume_chat_page(self, headless):
+        # Stay in the tab that already holds the conversation. Only when it is gone (browser
+        # restarted, other tab mode) fall back to a fresh chat.
+        page = self.open(headless)
+        host = (page.url or "").lower()
+        if "m365.cloud.microsoft" in host and not self.login_url(host):
+            return page, page.url
+        return self.open_chat_page(URL, headless), URL
+    def conversation_url(self, page):
+        # A new chat only gets its own URL a moment after the first answer; None = still the bare /chat page.
+        base = URL.split("//", 1)[-1].split("/", 1)[-1].rstrip("/")
+        deadline = time.time() + 10
+        while True:
+            path = (page.url or "").split("//", 1)[-1].split("/", 1)[-1].split("?", 1)[0].split("#", 1)[0].rstrip("/")
+            if path and path != base:
+                return page.url
+            if time.time() >= deadline:
+                return None
+            page.wait_for_timeout(500)
+    def image_srcs(self, page):
+        found = []
+        script = (
+            "() => [...document.images].filter(i => i.complete && i.naturalWidth >= 300 && i.naturalHeight >= 200"
+            " && i.offsetParent !== null).map(i => i.currentSrc || i.src)"
+        )
+        for root in self.roots(page):
+            try:
+                for src in root.evaluate(script):
+                    if src and src not in found and not src.startswith("data:image/svg"):
+                        found.append(src)
+            except Exception:
+                pass
+        return found
+    def fetch_image(self, page, src):
+        script = (
+            "async (src) => { const r = await fetch(src, {credentials: 'include'}); if (!r.ok) throw new Error(r.status);"
+            " const b = new Uint8Array(await r.arrayBuffer()); let s = '';"
+            " for (let i = 0; i < b.length; i += 32768) s += String.fromCharCode.apply(null, b.subarray(i, i + 32768));"
+            " return btoa(s); }"
+        )
+        for root in self.roots(page):
+            try:
+                return base64.b64decode(root.evaluate(script, src))
+            except Exception:
+                continue
+        return self.ctx.request.get(src).body()
+    def collect_images(self, page, before, image_dir, wait_s=180):
+        # Image generation lags behind the text answer, so keep polling until a new large image shows up.
+        known = set(before)
+        deadline = time.time() + wait_s
+        while time.time() < deadline:
+            new = [src for src in self.image_srcs(page) if src not in known]
+            if new and not self.busy(page):
+                page.wait_for_timeout(1500)  # let the final render replace any low-res preview
+                new = [src for src in self.image_srcs(page) if src not in known] or new
+                break
+            page.wait_for_timeout(1500)
+        else:
+            raise RuntimeError("No image was generated in the chat answer")
+        Path(image_dir).mkdir(parents=True, exist_ok=True)
+        saved = []
+        for index, src in enumerate(new[-3:], 1):
+            data = self.fetch_image(page, src)
+            ext = ".png" if data[:4] == b"\x89PNG" else ".jpg" if data[:2] == b"\xff\xd8" else ".webp" if data[8:12] == b"WEBP" else ".png"
+            target = Path(image_dir) / f"infographic-{index}{ext}"
+            target.write_bytes(data)
+            saved.append(str(target))
+        return saved
+    def chat(self, prompt, url=None, files=None, headless=True, model=DEFAULT_MODEL, resume=False, image_dir=None):
+        self.images = []
+        if resume and not url:
+            page, target_url = self.resume_chat_page(headless)
+        else:
+            target_url = url or URL
+            page = self.open_chat_page(target_url, headless)
         try:
             # Wait for the composer before deciding this is a login problem: a transient
             # silent-SSO redirect through login.microsoftonline.com is normal for a page
@@ -476,6 +630,7 @@ class Browser:
             for file_path in files or []:
                 self.upload(page, file_path)
             before = self._cards(page)
+            before_images = self.image_srcs(page) if image_dir else []
             box = self.wait_composer(page)
             box.click()
             try:
@@ -531,7 +686,9 @@ class Browser:
                     stable = stable + 1 if current == last else 0
                     last = current
                     if stable >= (2 if seen_busy else 4) and not is_busy:
-                        return current, page.url, chosen
+                        if image_dir:
+                            self.images = self.collect_images(page, before_images, image_dir)
+                        return current, self.conversation_url(page), chosen
             raise RuntimeError(
                 "Response timeout: assistant answer card was not detected"
             )

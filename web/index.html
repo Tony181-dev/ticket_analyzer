@@ -6,6 +6,7 @@
   <title>Ticket Analyzer · hoang6.nguyen</title>
   <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/static/app.css">
+  <script>try { document.documentElement.dataset.theme = localStorage.getItem('ta.theme') === 'dark' ? 'dark' : 'light'; } catch (e) { document.documentElement.dataset.theme = 'light'; }</script>
 </head>
 <body>
   <header class="topbar">
@@ -20,16 +21,27 @@
       <button class="mode-btn" data-mode="m365" role="radio">M365 Copilot</button>
       <button class="mode-btn" data-mode="copilot" role="radio">Copilot CLI</button>
     </div>
-    <label class="model-pick" data-i18n-title="model.label">
+    <div class="model-pick" id="modelPick" data-i18n-title="model.label">
       <svg viewBox="0 0 24 24" width="16" height="16"><use href="#s-analyze"/></svg>
-      <input id="modelInput" list="modelList" autocomplete="off" spellcheck="false">
-      <datalist id="modelList"></datalist>
-    </label>
+      <input id="modelInput" role="combobox" aria-controls="modelMenu" aria-expanded="false" autocomplete="off" spellcheck="false">
+      <button id="modelToggle" class="model-caret" type="button" tabindex="-1" data-i18n-title="model.pick">
+        <svg viewBox="0 0 12 12" width="12" height="12"><path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" d="M2.5 4.5 6 8l3.5-3.5"/></svg>
+      </button>
+      <ul id="modelMenu" class="model-menu" role="listbox" hidden></ul>
+    </div>
+    <button id="previewBtn" class="btn btn-primary preview-btn" type="button" data-i18n-title="preview.startTitle" aria-pressed="false">
+      <svg viewBox="0 0 24 24" width="16" height="16"><use id="previewIcon" href="#i-play"/></svg>
+      <span id="previewBtnText" data-i18n="preview.start">Preview</span>
+    </button>
     <div class="top-actions">
       <div class="seg lang" role="radiogroup" data-i18n-title="lang.label">
-        <button class="lang-btn" data-lang="vi" role="radio">VI</button>
-        <button class="lang-btn" data-lang="en" role="radio">EN</button>
+        <button class="lang-btn" data-lang="vi" role="radio" title="Tiếng Việt" aria-label="Tiếng Việt"><svg class="flag" viewBox="0 0 24 16"><use href="#f-vn"/></svg></button>
+        <button class="lang-btn" data-lang="en" role="radio" title="English" aria-label="English"><svg class="flag" viewBox="0 0 24 16"><use href="#f-en"/></svg></button>
       </div>
+      <button id="themeBtn" class="icon-btn theme-btn" data-i18n-title="theme.toggle">
+        <svg class="i-moon" viewBox="0 0 24 24" width="20" height="20"><use href="#i-moon"/></svg>
+        <svg class="i-sun" viewBox="0 0 24 24" width="20" height="20"><use href="#i-sun"/></svg>
+      </button>
       <button id="aboutBtn" class="pill about-pill" data-i18n-title="about.btn">
         <svg viewBox="0 0 24 24" width="16" height="16"><use href="#i-info"/></svg><span data-i18n="about.btn">Mô tả hệ thống</span>
       </button>
@@ -58,6 +70,18 @@
         <div class="field grow">
           <label for="issue" data-i18n="in.issue">Jira ticket</label>
           <input id="issue" data-i18n-ph="in.issue.ph" autocomplete="off">
+          <div class="check-help">
+            <label class="check small-check"><input type="checkbox" id="continueOnOptionalError"> <span data-i18n="in.continueOptionalErrors">Continue if steps 2, 3, or 4 fail</span></label>
+            <button type="button" class="help-icon" data-help="in.continueOptionalErrorsHelp" data-i18n-title="help.open" aria-label="?">?</button>
+          </div>
+          <div class="check-help">
+            <label class="check small-check"><input type="checkbox" id="infographicAuto"> <span data-i18n="infographic.auto">Tự chạy bước 07 trong luồng</span></label>
+            <button type="button" class="help-icon" data-help="infographic.autoHelp" data-i18n-title="help.open" aria-label="?">?</button>
+          </div>
+          <div class="check-help">
+            <label class="check small-check"><input type="checkbox" id="autoPublishCollab"> <span data-i18n="collab.autoPublish">Tự động đẩy lên Collab</span></label>
+            <button type="button" class="help-icon" data-help="collab.autoPublishHelp" data-i18n-title="help.open" aria-label="?">?</button>
+          </div>
         </div>
         <div class="field grow2">
           <label><span data-i18n="in.logs">File log</span> <span class="muted" data-i18n="in.optional">(tuỳ chọn)</span></label>
@@ -65,7 +89,13 @@
             <div id="logChips" class="chips"></div>
             <button class="btn btn-ghost" id="pickLogs" data-i18n="in.pickLogs">Chọn file…</button>
           </div>
-          <label class="check small-check"><input type="checkbox" id="autoAtt"> <span data-i18n="in.autoAtt"></span></label>
+          <div class="check-help">
+            <label class="check small-check"><input type="checkbox" id="autoAtt"> <span data-i18n="in.autoAtt"></span></label>
+            <button type="button" class="help-icon" data-help="in.autoAttHelp" data-i18n-title="help.open" aria-label="?">?</button>
+          </div>
+          <div class="check-help mode-label"><label for="logMode" data-i18n="ls.mode">LogSleuth</label><button type="button" class="help-icon" data-help="ls.modeHelp" data-i18n-title="help.open" aria-label="?">?</button></div>
+          <select id="logMode"><option value="auto" data-i18n="ls.auto">Auto</option><option value="manual" data-i18n="ls.manual">Manual</option></select>
+          <button class="btn btn-ghost btn-sm att-prog-btn" id="attProgBtn"><span class="spinner" aria-hidden="true"></span><span id="attProgBtnText"></span></button>
         </div>
         <div class="field grow2">
           <label for="source"><span data-i18n="in.source">Folder source code</span> <span class="muted" data-i18n="in.optional">(tuỳ chọn)</span></label>
@@ -73,6 +103,11 @@
             <input id="source" placeholder="D:\src\project" autocomplete="off">
             <button class="btn btn-ghost" id="pickSource" data-i18n="in.pickSource">Chọn folder…</button>
           </div>
+          <div class="check-help">
+            <label class="check small-check"><input type="checkbox" id="useCodeGraph"> <span data-i18n="in.useCodeGraph">Dùng Code Graph</span></label>
+            <button type="button" class="help-icon" data-help="in.useCodeGraphHelp" data-i18n-title="help.open" aria-label="?">?</button>
+          </div>
+          <div class="muted small" data-i18n="in.sourceHint">Source này tạo catalog cho Log brief; Code Graph có thể bật/tắt riêng.</div>
         </div>
         <div class="run-actions">
           <button id="runAll" class="btn btn-primary btn-lg"></button>
@@ -98,12 +133,22 @@
 
       <section class="card console-card">
         <div class="console-head">
-          <button class="console-toggle" id="consoleToggle" aria-expanded="true">
-            <span data-i18n="console.title">Nhật ký</span><span class="muted small" id="consoleCount"></span>
-          </button>
+          <div class="console-tabs" role="tablist" data-i18n-title="console.tabs">
+            <button class="console-tab active" id="consoleLogTab" type="button" role="tab" aria-selected="true"
+                    aria-controls="consoleLogPanel" data-i18n="console.title">Nhật ký</button>
+            <button class="console-tab" id="consoleUsageTab" type="button" role="tab" aria-selected="false"
+                    aria-controls="usagePanel" data-i18n="usage.tab">Token & thời gian</button>
+          </div>
+          <span class="muted small" id="consoleCount"></span>
           <button class="link-btn" id="clearConsole" data-i18n="console.clear">Xoá</button>
+          <button class="icon-btn console-toggle" id="consoleToggle" type="button" aria-expanded="true" data-i18n-title="console.collapse">⌃</button>
         </div>
-        <pre id="console" class="console"></pre>
+        <div id="consolePanels" class="console-panels">
+          <div id="consoleLogPanel" class="console-pane" role="tabpanel" aria-labelledby="consoleLogTab">
+            <pre id="console" class="console"></pre>
+          </div>
+          <div id="usagePanel" class="usage-panel" role="tabpanel" aria-labelledby="consoleUsageTab" hidden></div>
+        </div>
       </section>
     </main>
   </div>
@@ -169,13 +214,80 @@
         <div class="field"><label for="s_m365" data-i18n="cfg.m365">Model M365</label><input id="s_m365" name="m365_model"></div>
         <div class="field"><label for="s_cli"><span data-i18n="cfg.cli">Model Copilot CLI</span> <span class="muted" data-i18n="cfg.cliHint"></span></label><input id="s_cli" name="copilot_model" placeholder="claude-sonnet-4.5"></div>
         <div class="field"><label for="s_refine"><span data-i18n="cfg.refine">Model refine format</span> <span class="muted">(CLI)</span></label><input id="s_refine" name="refine_model" placeholder="gpt-5-mini"></div>
-        <div class="field"><label for="s_budget" data-i18n="cfg.budget">Token tối đa cho log brief</label><input id="s_budget" name="log_budget_tokens" type="number" min="2000" step="1000"></div>
+        <div class="field"><label for="s_budget" data-i18n="cfg.budget">Token tối đa cho log brief</label><input id="s_budget" name="log_budget_tokens" type="number" min="2000" max="50000" step="1000"></div>
         <div class="field span2"><label for="s_dl"><span data-i18n="cfg.download">Thư mục tải đính kèm</span> <span class="muted" data-i18n="cfg.downloadHint"></span></label><input id="s_dl" name="download_dir"></div>
+        <div class="field"><label for="s_axel"><span data-i18n="cfg.axel">axel</span> <span class="muted" data-i18n="cfg.axelHint"></span></label><input id="s_axel" name="axel_command" placeholder="axel.exe"></div>
+        <div class="field"><label for="s_axelN" data-i18n="cfg.axelConn">Số kết nối axel</label><input id="s_axelN" name="axel_connections" type="number" min="1" max="64"></div>
       </div>
-      <label class="check"><input type="checkbox" name="review_before_publish"> <span data-i18n="cfg.review"></span></label>
-      <label class="check"><input type="checkbox" name="m365_headless"> <span data-i18n="cfg.headless"></span></label>
+      <div class="check-help">
+        <label class="check"><input type="checkbox" name="review_before_publish"> <span data-i18n="cfg.review"></span></label>
+        <button type="button" class="help-icon" data-help="cfg.reviewHelp" data-i18n-title="help.open" aria-label="?">?</button>
+      </div>
+      <div class="check-help">
+        <label class="check"><input type="checkbox" name="m365_headless"> <span data-i18n="cfg.headless"></span></label>
+        <button type="button" class="help-icon" data-help="cfg.headlessHelp" data-i18n-title="help.open" aria-label="?">?</button>
+      </div>
       <div class="modal-foot"><button class="btn btn-primary" type="submit" data-i18n="cfg.save">Lưu</button></div>
     </form>
+  </div>
+
+  <!-- checkbox option help -->
+  <div id="helpModal" class="modal" hidden>
+    <div class="modal-box help-box" role="dialog" aria-modal="true" aria-labelledby="helpTitle">
+      <div class="modal-head">
+        <h3 id="helpTitle"></h3>
+        <button class="icon-btn" type="button" data-close data-i18n-title="help.close">✕</button>
+      </div>
+      <p id="helpText" class="help-text"></p>
+      <div class="modal-foot"><button class="btn" type="button" data-close data-i18n="help.close">Đóng</button></div>
+    </div>
+  </div>
+
+  <!-- jira attachment selection -->
+  <div id="attModal" class="modal" hidden>
+    <div class="modal-box att-box">
+      <div class="modal-head">
+        <div><h3 data-i18n="att.title">Tệp đính kèm</h3><div id="attSub" class="muted small"></div></div>
+        <button class="icon-btn" data-close data-i18n-title="drawer.close">✕</button>
+      </div>
+      <div class="att-head">
+        <div class="field"><label for="attFolder" data-i18n="att.folder">Tải về thư mục</label><input id="attFolder" autocomplete="off"></div>
+        <button class="btn btn-ghost" id="attPick" data-i18n="att.pick">Chọn…</button>
+        <button class="btn btn-ghost" id="attOpen" data-i18n="att.open">Mở thư mục tải</button>
+      </div>
+      <div class="att-bar">
+        <div class="check-help"><label class="check"><input type="checkbox" id="attAll"> <span data-i18n="att.all">Chọn tất cả</span></label><button type="button" class="help-icon" data-help="att.selectionHelp" data-i18n-title="help.open" aria-label="?">?</button></div>
+        <span id="attCount" class="muted small"></span>
+      </div>
+      <div id="attList" class="att-list"></div>
+      <div class="extra-note" data-i18n="att.hint"></div>
+      <div class="modal-foot">
+        <button class="btn btn-ghost" id="attSkip"></button>
+        <button class="btn btn-primary" id="attRun" data-i18n="att.run">Tải về & đưa vào phân tích</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- attachment download progress (opened on demand) -->
+  <div id="attProgModal" class="modal" hidden>
+    <div class="modal-box att-box">
+      <div class="modal-head">
+        <h3 data-i18n="att.progTitle">Tiến độ tải tệp đính kèm</h3>
+        <button class="icon-btn" data-close data-i18n-title="drawer.close">✕</button>
+      </div>
+      <div id="attProgActive" class="att-progress" hidden>
+        <div class="att-progress-top">
+          <span class="spinner" aria-hidden="true"></span>
+          <strong id="attProgressText"></strong>
+          <button class="btn btn-danger btn-sm" id="attStop">
+            <svg viewBox="0 0 24 24" width="14" height="14"><use href="#i-stop"/></svg> <span data-i18n="run.stop">Dừng</span>
+          </button>
+        </div>
+        <div class="att-bar-track"><div id="attProgressBar" class="att-bar-fill"></div></div>
+        <div id="attProgressName" class="muted small"></div>
+      </div>
+      <div id="attProgIdle" class="muted" data-i18n="att.progIdle"></div>
+    </div>
   </div>
 
   <!-- system overview infographic -->
@@ -193,11 +305,33 @@
 
   <svg width="0" height="0" style="position:absolute" aria-hidden="true">
     <defs>
+      <symbol id="f-vn" viewBox="0 0 24 16"><rect width="24" height="16" fill="#da251d"/><path fill="#ffde00" d="M12 3.7l1.01 3.11h3.27l-2.64 1.92 1.01 3.11L12 9.92l-2.65 1.92 1.01-3.11-2.64-1.92h3.27z"/></symbol>
+      <symbol id="f-en" viewBox="0 0 24 16">
+        <clipPath id="fc-uk"><path d="M0 0H24L0 16Z"/></clipPath>
+        <clipPath id="fc-us"><path d="M24 0V16H0Z"/></clipPath>
+        <g clip-path="url(#fc-uk)">
+          <rect width="24" height="16" fill="#012169"/>
+          <path d="M0 0L24 16M24 0L0 16" stroke="#fff" stroke-width="3"/>
+          <path d="M0 0L24 16M24 0L0 16" stroke="#c8102e" stroke-width="1.1"/>
+          <path d="M12 0V16M0 8H24" stroke="#fff" stroke-width="4.4"/>
+          <path d="M12 0V16M0 8H24" stroke="#c8102e" stroke-width="2.4"/>
+        </g>
+        <g clip-path="url(#fc-us)">
+          <rect width="24" height="16" fill="#fff"/>
+          <path fill="#b22234" d="M0 0h24v1.23H0zM0 2.46h24v1.23H0zM0 4.92h24v1.23H0zM0 7.38h24v1.23H0zM0 9.85h24v1.23H0zM0 12.31h24v1.23H0zM0 14.77h24V16H0z"/>
+          <rect x="14" y="2" width="10" height="8" fill="#3c3b6e"/>
+          <g fill="#fff"><circle cx="21" cy="4" r=".7"/><circle cx="18.5" cy="6.5" r=".7"/><circle cx="21.5" cy="7.6" r=".7"/></g>
+        </g>
+        <path d="M24 0L0 16" stroke="#fff" stroke-width=".8"/>
+      </symbol>
+      <symbol id="i-sun" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M5.6 18.4 7 17M17 7l1.4-1.4"/></g></symbol>
+      <symbol id="i-moon" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5Z"/></symbol>
       <symbol id="i-gear" viewBox="0 0 24 24"><path fill="currentColor" d="M19.4 13a7.5 7.5 0 0 0 0-2l2.1-1.6a.5.5 0 0 0 .1-.6l-2-3.5a.5.5 0 0 0-.6-.2l-2.5 1a7.6 7.6 0 0 0-1.7-1l-.4-2.6a.5.5 0 0 0-.5-.4h-4a.5.5 0 0 0-.5.4l-.4 2.6a7.6 7.6 0 0 0-1.7 1l-2.5-1a.5.5 0 0 0-.6.2l-2 3.5a.5.5 0 0 0 .1.6L4.6 11a7.5 7.5 0 0 0 0 2l-2.1 1.6a.5.5 0 0 0-.1.6l2 3.5c.1.2.4.3.6.2l2.5-1c.5.4 1.1.7 1.7 1l.4 2.6c0 .3.3.4.5.4h4c.3 0 .5-.2.5-.4l.4-2.6c.6-.3 1.2-.6 1.7-1l2.5 1c.2.1.5 0 .6-.2l2-3.5a.5.5 0 0 0-.1-.6L19.4 13ZM12 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7Z"/></symbol>
       <symbol id="i-play" viewBox="0 0 24 24"><path fill="currentColor" d="M8 5.5v13a1 1 0 0 0 1.5.9l10.2-6.5a1 1 0 0 0 0-1.7L9.5 4.6A1 1 0 0 0 8 5.5Z"/></symbol>
       <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></symbol>
       <symbol id="i-check" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" d="m5 12.5 4.5 4.5L19 7.5"/></symbol>
       <symbol id="i-x" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" d="M6.5 6.5l11 11m0-11-11 11"/></symbol>
+      <symbol id="i-clock" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></g></symbol>
       <symbol id="i-pause" viewBox="0 0 24 24"><path fill="currentColor" d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z"/></symbol>
       <symbol id="i-skip" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" d="M5 12h14"/></symbol>
       <symbol id="i-refresh" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" d="M19 12a7 7 0 1 1-2.1-5M19 4.5V8h-3.5"/></symbol>
@@ -209,6 +343,7 @@
       <symbol id="s-graph" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="8" r="2.5"/><circle cx="9" cy="18" r="2.5"/><path d="M8.3 7.1l7.4.8M7 8.4l1.4 7.2M16.4 10l-5.6 6.2"/></g></symbol>
       <symbol id="s-analyze" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M12 3l1.8 4.7L18.5 9.5 13.8 11.3 12 16l-1.8-4.7L5.5 9.5l4.7-1.8zM18.5 15.5l.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8z"/></symbol>
       <symbol id="s-format" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M8.5 7 4 12l4.5 5M15.5 7 20 12l-4.5 5M13.5 5l-3 14"/></symbol>
+      <symbol id="s-infographic" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M4 4.5h16v15H4zM8 16v-4M12 16V8M16 16v-6M4 9.5h16"/></symbol>
       <symbol id="s-collab" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M12 15V4m0 0L8 8m4-4 4 4M5 14v4.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V14"/></symbol>
     </defs>
   </svg>

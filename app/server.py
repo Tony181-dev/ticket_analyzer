@@ -7,9 +7,9 @@
   POST /api/mcp/tokens         -> save the 2-field token form
   POST /api/settings           -> patch settings
   POST /api/pick {kind}        -> native dialog
-  POST /api/runs               -> create {issue, log_files[], source_dir}
+    POST /api/runs               -> create {issue, log_files[], source_dir, use_codegraph?, use_infographic?, continue_on_optional_error?, auto_publish_to_collab?}
   GET  /api/runs/<id>          -> run         POST /api/runs/<id>/start {from?, only?, publish?}
-  POST /api/runs/<id>/inputs   -> {log_files?, source_dir?}
+    POST /api/runs/<id>/inputs   -> {log_files?, source_dir?, use_codegraph?, use_infographic?, continue_on_optional_error?, auto_publish_to_collab?}
   GET  /api/runs/<id>/files/<name>  PUT same -> raw artifact / save edit
   POST /api/runs/<id>/graph-query {q}   POST /api/runs/<id>/open-folder
   POST /api/stop
@@ -25,10 +25,11 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlparse
 
-from . import attachments, doctor, events, mcp, paths, picker, pipeline, settings
+from . import attachments, doctor, events, explorer, mcp, paths, picker, pipeline, settings
 from .ai import copilot
 from .ai.m365 import worker as m365_worker
 from .evidence import graph as codegraph
+from .evidence import logsleuth
 from .i18n import t
 
 TYPES = {".md": "text/markdown; charset=utf-8", ".json": "application/json; charset=utf-8",
@@ -50,7 +51,7 @@ def _background(fn, *args):
 
 def _open_folder(path):
     if os.name == "nt":
-        os.startfile(str(path))  # noqa: S606 - local desktop app
+        explorer.open_folder(path)
     else:
         subprocess.Popen(["xdg-open" if os.uname().sysname != "Darwin" else "open", str(path)])
 
@@ -122,6 +123,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, state())
             if p == "/api/doctor":
                 return self._send(200, doctor.checks())
+            if p == "/api/logsleuth/catalogs":
+                return self._send(200, {"catalogs": logsleuth.list_catalogs()})
             m = re.fullmatch(r"/api/runs/([^/]+)", p)
             if m:
                 run = pipeline.get(m.group(1))
@@ -158,6 +161,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, saved)
             if p == "/api/pick":
                 return self._send(200, {"paths": picker.pick(body.get("kind"))})
+            if p == "/api/logsleuth/catalog-info":
+                return self._send(200, logsleuth.catalog_info(body.get("path") or ""))
             if p == "/api/mcp/tokens":
                 mcp.save_tokens(body)
                 _background(doctor.warm_mcp)
@@ -196,11 +201,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, {"removed": removed, "kept": keep})
             if p == "/api/runs":
                 run = pipeline.create(body.get("issue"), body.get("log_files") or [], body.get("source_dir") or "",
-                                      bool(body.get("auto_attachments")), body.get("download_dir") or "")
+                                      bool(body.get("auto_attachments")), body.get("download_dir") or "",
+                                      body.get("use_codegraph", True), body.get("logsleuth"),
+                                      body.get("use_infographic", True), body.get("continue_on_optional_error", False),
+                                      body.get("auto_publish_to_collab"))
                 if body.get("start", True):
                     pipeline.executor.start(run["id"])
                 return self._send(200, run)
-            m = re.fullmatch(r"/api/runs/([^/]+)/(start|inputs|graph-query|open-folder|attachments)", p)
+            m = re.fullmatch(r"/api/runs/([^/]+)/(start|inputs|log-scan|graph-query|open-folder|attachments)", p)
             if m:
                 run_id, action = m.groups()
                 if action == "start":
@@ -208,9 +216,16 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(200, {"ok": True})
                 if action == "inputs":
                     return self._send(200, pipeline.update_inputs(run_id, body.get("log_files"), body.get("source_dir"),
-                                                                  body.get("auto_attachments"), body.get("download_dir")))
+                                                                  body.get("auto_attachments"), body.get("download_dir"),
+                                                                  body.get("use_codegraph"), body.get("logsleuth"),
+                                                                  body.get("use_infographic"),
+                                                                  body.get("continue_on_optional_error"),
+                                                                  body.get("auto_publish_to_collab")))
+                if action == "log-scan":
+                    pipeline.executor.start(run_id, "log", only=True, catalog_only=True)
+                    return self._send(202, {"ok": True})
                 if action == "attachments":
-                    pipeline.executor.fetch_attachments(run_id, body.get("names") or [], body.get("analyze") or [], body.get("folder"))
+                    pipeline.executor.fetch_attachments(run_id, body.get("names") or [], body.get("folder"))
                     return self._send(202, {"ok": True})
                 if action == "graph-query":
                     return self._send(200, {"hits": codegraph.query(pipeline.read_file(run_id, "04-graph.json"), body.get("q", ""))})
@@ -258,6 +273,8 @@ def state():
         "busy_run": pipeline.executor.run_id if pipeline.executor.busy else None,
         "mcp": mcp.status(),
         "models": {"m365": settings.M365_MODELS, "copilot": settings.COPILOT_MODELS},
+        "logsleuth": {"defaults": logsleuth.DEFAULT_OPTIONS, "parsers": logsleuth.PARSERS,
+                  "max_tokens": logsleuth.MAX_BRIEF_TOKENS, "min_tokens": logsleuth.MIN_BRIEF_TOKENS},
         "default_download_dir": str(attachments.default_folder("<ISSUE>")),
     }
 
@@ -268,9 +285,8 @@ def main():
     server = Server(("127.0.0.1", port), Handler)
     url = f"http://localhost:{port}"
     print(t("srv.running", url=url), flush=True)
-    # Probe the M365 login once in the background so Setup shows the real state.
-    if settings.load()["ai_mode"] == "m365":
-        _background(lambda: doctor.checks(probe_m365=True))
+    # Probe M365 login once on startup even when Copilot CLI is the selected backend.
+    _background(lambda: doctor.checks(probe_m365=True))
     if not os.getenv("TA_NO_BROWSER"):
         threading.Timer(0.8, lambda: webbrowser.open(url)).start()
     try:

@@ -8,10 +8,12 @@ from . import paths
 DEFAULTS = {
     "lang": "vi",                      # "vi" | "en" (UI + server messages)
     "ai_mode": "m365",                 # "m365" | "copilot"
-    "m365_model": "GPT 6 Luna",
+    "m365_model": "GPT-5.6 Sol Think Deeper",
     "m365_headless": True,
-    "copilot_model": "",               # "" = Copilot CLI default (auto)
+    "copilot_model": "gpt-6-luna",     # "" = Copilot CLI's own default (auto)
     "download_dir": "",                # "" = ~/Downloads/TicketAnalyzer/<ISSUE>
+    "axel_command": "",                 # "" = axel bundled with the app, then axel on PATH
+    "axel_connections": 30,            # parallel connections per attachment
     "refine_model": "",                # small model for Step "format" refine; "" = CLI default
     "collab_space_key": "~",
     "collab_parent_id": "",
@@ -21,9 +23,9 @@ DEFAULTS = {
     "graph_token_budget": 150000,
     "port": 6969,
 }
-VERSION = 2
-M365_MODELS = ["GPT 6 Luna", "GPT 5.6 Sol Think deeper", "Claude Sonnet", "Claude Opus"]
-COPILOT_MODELS = ["auto", "gpt-5", "gpt-5-mini", "claude-sonnet-4.5", "claude-opus-4.1"]
+VERSION = 3
+M365_MODELS = ["GPT-5.6 Sol Think Deeper", "GPT-5.6 Sol Think", "GPT 6 Luna", "Claude Sonnet", "Claude Opus"]
+COPILOT_MODELS = ["gpt-6-luna", "auto", "gpt-5", "gpt-5-mini", "claude-sonnet-4.5", "claude-opus-4.1"]
 _lock = threading.Lock()
 
 
@@ -35,9 +37,16 @@ def _read():
     except (OSError, ValueError):
         stored = {}
     data.update(stored)
-    if stored.get("settings_version", 1) < 2 and stored.get("m365_model") == "GPT 5.6 Sol Think deeper":
-        data["m365_model"] = DEFAULTS["m365_model"]  # v1 stored the old default, not a user choice
+    if stored.get("settings_version", 1) < 3:  # older files stored the previous defaults, not a user choice
+        if stored.get("m365_model") in ("GPT 6 Luna", "GPT-5.6 Sol Think Deeper"):
+            data["m365_model"] = DEFAULTS["m365_model"]
+        if not stored.get("copilot_model"):
+            data["copilot_model"] = DEFAULTS["copilot_model"]
     data.pop("settings_version", None)
+    try:
+        data["log_budget_tokens"] = max(2000, min(50000, int(data["log_budget_tokens"])))
+    except (TypeError, ValueError, OverflowError):
+        data["log_budget_tokens"] = DEFAULTS["log_budget_tokens"]
     return data
 
 
@@ -51,6 +60,10 @@ def save(patch):
         current = _read()
         for key, value in (patch or {}).items():
             if key in DEFAULTS:
+                if key == "log_budget_tokens":
+                    if isinstance(value, bool) or not isinstance(value, (int, float)) or not 2000 <= value <= 50000 or int(value) != value:
+                        raise ValueError("Log token cap must be an integer between 2000 and 50000")
+                    value = int(value)
                 current[key] = value
         paths.SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
         tmp = paths.SETTINGS_FILE.with_suffix(".tmp")

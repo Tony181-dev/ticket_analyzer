@@ -63,20 +63,20 @@ def ensure_auth(force=False,quick=False):
  if not prefer_headed and b.auth(quick=quick):auth=True;remember_browser_mode(False);return True
  if b.auth_headed(quick=quick):auth=True;remember_browser_mode(True);return True
  auth=False;return False
-def chat_with_auth_recovery(prompt,conversation_url,files,requested_headless,model):
+def chat_with_auth_recovery(prompt,conversation_url,files,requested_headless,model,resume=False,image_dir=None):
  # LOGIN_REQUIRED can be a transient SSO redirect or a tenant rejecting
  # headless Chromium. Verify the saved profile and retry once in the proven
  # mode before reporting that interactive login is genuinely required.
  global auth,prefer_headed
  h=bool(requested_headless) and not prefer_headed
- try:return (*b.chat(prompt,conversation_url,files,h,model),h)
+ try:return (*b.chat(prompt,conversation_url,files,h,model,resume,image_dir),h)
  except Exception as error:
   if str(error)!='LOGIN_REQUIRED':raise
   if h:remember_browser_mode(True)
   auth=None
   if not ensure_auth(force=True):raise
   h=bool(requested_headless) and not prefer_headed
-  return (*b.chat(prompt,conversation_url,files,h,model),h)
+  return (*b.chat(prompt,conversation_url,files,h,model,resume,image_dir),h)
 for line in sys.stdin:
  i=None
  try:
@@ -121,8 +121,11 @@ for line in sys.stdin:
    if not prompt:
     emit(err(i,'INVALID_REQUEST','No message content'));continue
    conversation_url=given or(rec or{}).get('conversation_url')
+   # A session that already talked but has no stored URL (new chats get theirs late) must continue in the open tab, not start another chat.
+   resume=bool(rec and rec.get('messages') and not conversation_url)
+   image_dir=str(p.get('image_dir')or'')or None
    try:
-    content,url,chosen,h=chat_with_auth_recovery(prompt,conversation_url,files,h,model)
+    content,url,chosen,h=chat_with_auth_recovery(prompt,conversation_url,files,h,model,resume,image_dir)
    except Exception as e:
     if str(e)=='LOGIN_REQUIRED':
      auth=False;emit(err(i,'M365_LOGIN_REQUIRED','M365 login required'));continue
@@ -137,7 +140,7 @@ for line in sys.stdin:
      traceback.print_exc(file=sys.stderr);session_warning=str(session_error);session_record={'id':sid,'conversation_url':url,'model':chosen}
    else:
     session_record=None
-   x={'content':content,'session':session_record,'elapsed_seconds':round(time.time()-started,3),'headless':h,'m365_model':chosen,'attached_files':files,'session_warning':session_warning}
+   x={'content':content,'session':session_record,'elapsed_seconds':round(time.time()-started,3),'headless':h,'m365_model':chosen,'attached_files':files,'session_warning':session_warning,'images':list(b.images)}
   else:
    emit(err(i,'UNKNOWN_ACTION','Unknown action: '+str(a)));continue
   emit({'id':i,'ok':True,'result':x})

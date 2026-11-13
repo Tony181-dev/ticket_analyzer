@@ -14,6 +14,7 @@ datas = [
     (str(root / "instructions"), "instructions"),
     # The M365 worker runs as a script with flat imports, so ship its sources as files.
     (str(root / "app" / "m365_worker"), "app/m365_worker"),
+    (str(root / "app" / "axel-for-windows-master"), "app/axel-for-windows-master"),
 ]
 binaries = []
 # m365_worker ships as source files; codegraph's CLI/MCP server are not used by the app
@@ -26,6 +27,11 @@ pw_datas, pw_binaries, pw_hidden = collect_all("playwright")  # includes the Nod
 datas += pw_datas
 binaries += pw_binaries
 hiddenimports += pw_hidden
+
+sevenzip_datas, sevenzip_binaries, sevenzip_hidden = collect_all("py7zr")
+datas += sevenzip_datas
+binaries += sevenzip_binaries
+hiddenimports += sevenzip_hidden + collect_submodules("multivolumefile")
 
 try:  # bundle uv/uvx so mcp-atlassian runs without installing anything
     import uv

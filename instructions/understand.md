@@ -1,32 +1,39 @@
-# Ticket Understanding Instruction
+# Ticket Incident-Time Extraction
 
-You are a senior software engineer preparing to read runtime logs for a Jira issue.
-You are given the Jira ticket and the clock range actually present in each log file.
+Read **only the attached Jira ticket**. Do not inspect logs or source code, infer a time from
+ticket creation/update dates, or invent a timestamp.
 
-1. Understand the ticket: symptom, reproduction steps, affected feature/component, build/version,
-   and every time reference (reproduction time, attached screenshots/videos, comments such as
-   "issue happened at 14:32", log excerpts pasted in the ticket).
-2. Decide the time window in which the issue most likely happened **in the log clock**.
-   - Prefer explicit times from the ticket or pasted log lines; map them onto the log clock range
-     given below (logs may be in a different timezone or device clock than the reporter).
-   - Add a safety margin: about 2 minutes before and 1 minute after a precise moment, or the whole
-     reproduction session when only a rough time is known.
-   - If the ticket gives no usable time, or the times do not fall inside any log range,
-     return null for both times (the whole log will be used).
-3. Pick search keywords that are likely to appear in the logs for this issue: component/tag names,
-   error codes, API names, exception names, state names. 3-12 short literal strings, no regex.
-4. List likely log services/tags (may be empty).
+Find an explicit clock time or time range that the ticket ties to when the reported issue
+occurred (for example, a reproduction time in the description or a comment). The log processor
+accepts a time-of-day window in the clock printed by the log, not a calendar date. Do not
+convert timezones or assume the server's local time:
 
-Write a short Markdown understanding first (Summary, Symptom, Component, Timeline, Unknowns).
-Then end your answer with exactly one fenced JSON block:
+- For one precise incident time, return a window from about 2 minutes before to 1 minute after it.
+- For an explicit incident interval, use that interval, with a small margin if its endpoints are
+  point times.
+- A date without a time, a ticket-edit timestamp, or an unrelated time is not usable.
+- If there is no usable incident time, set **both** `time_start` and `time_end` to `null`. An
+  empty window means LogSleuth processes the full time range of every supplied log file.
+
+Write at most a few lines stating whether an explicit incident time was found and why. Then end
+your answer with exactly one fenced JSON block:
 
 ```json
 {
-  "time_start": "HH:MM:SS or null",
-  "time_end": "HH:MM:SS or null",
+  "schema_version": 1,
+  "time_basis": "log-local-clock",
+  "time_start": "HH:MM:SS[.mmm] or null",
+  "time_end": "HH:MM:SS[.mmm] or null",
   "confidence": "high | medium | low | none",
-  "reason": "one sentence explaining how the window was chosen",
-  "keywords": ["..."],
-  "services": ["..."]
+  "reason": "one sentence citing the ticket time reference, or stating that none was found",
+  "keywords": [],
+  "services": []
 }
 ```
+
+Use real JSON null (not the string "null") for absent times. Hours must be 00-23,
+minutes/seconds 00-59. Keep fractional seconds when explicitly relevant (1-3 digits).
+Windows crossing midnight are allowed. Keywords may be copied from the ticket; do not
+guess service names from outside the ticket. The application validates and normalizes
+this output into 02-focus.json with filter_mode = "window" or "full". If JSON or any
+provided clock value is invalid, Auto uses the full catalog over the full log time range.

@@ -1,19 +1,19 @@
 @echo off
-rem Build the Windows installer: dist\TicketAnalyzer-Setup-<version>.exe
-rem   - installs per user (no admin), Start menu + optional Desktop shortcut
-rem   - registers an uninstaller (Apps & features, Start menu "Uninstall Ticket Analyzer")
-rem Usage: build_installer.bat [--skip-build]   (--skip-build reuses the existing dist\TicketAnalyzer)
+rem Build the Windows installer package in dist\:
+rem   - TicketAnalyzer-Setup-<version>.exe   (installer, per user, no admin)
+rem   - TicketAnalyzer-Uninstall.bat          (finds and runs the installed uninstaller)
+rem Usage: build_installer.bat [--skip-build]   (--skip-build reuses dist\TicketAnalyzer if it still exists)
 setlocal
 chcp 65001 >nul
 cd /d "%~dp0"
 
 if /i not "%~1"=="--skip-build" (
   call "%~dp0build_exe.bat"
-  if errorlevel 1 exit /b 1
+  if errorlevel 1 goto :fail
 )
 if not exist "%~dp0dist\TicketAnalyzer\TicketAnalyzer.exe" (
   echo [!] Chua co dist\TicketAnalyzer. Chay build_exe.bat truoc.
-  exit /b 1
+  goto :fail
 )
 
 call :findiscc
@@ -24,21 +24,38 @@ if not defined ISCC (
 )
 if not defined ISCC (
   echo [!] Khong tim thay Inno Setup 6. Cai tu https://jrsoftware.org/isdl.php roi chay lai.
-  exit /b 1
+  goto :fail
 )
 
 set "VER="
 for /f "delims=" %%V in ('call "%~dp0.venv\Scripts\python.exe" -c "import app; print(app.__version__)"') do set "VER=%%V"
-if not defined VER ( echo [!] Khong doc duoc phien ban app. & exit /b 1 )
+if not defined VER ( echo [!] Khong doc duoc phien ban app. & goto :fail )
 echo [Installer] Dong goi bo cai %VER% bang "%ISCC%" ...
 "%ISCC%" /Qp /DAppVersion=%VER% "%~dp0packaging\installer.iss"
-if errorlevel 1 ( echo [!] Inno Setup loi. & exit /b 1 )
-if not exist "%~dp0dist\TicketAnalyzer-Setup-%VER%.exe" ( echo [!] Khong thay file setup. & exit /b 1 )
+if errorlevel 1 ( echo [!] Inno Setup loi. & goto :fail )
+set "SETUP=%~dp0dist\TicketAnalyzer-Setup-%VER%.exe"
+if not exist "%SETUP%" ( echo [!] Khong thay file setup. & goto :fail )
+
+echo [Installer] Don dep file cu / tam...
+for %%F in ("%~dp0dist\TicketAnalyzer-Setup-*.exe") do if /i not "%%~nxF"=="TicketAnalyzer-Setup-%VER%.exe" del /q "%%~F"
+for %%F in ("%~dp0dist\TicketAnalyzer-*-win64.zip") do del /q "%%~F"
+if exist "%~dp0build" rd /s /q "%~dp0build"
+if exist "%~dp0dist\TicketAnalyzer" rd /s /q "%~dp0dist\TicketAnalyzer"
+copy /y "%~dp0packaging\uninstall.bat" "%~dp0dist\TicketAnalyzer-Uninstall.bat" >nul
+
 echo.
-echo Xong: dist\TicketAnalyzer-Setup-%VER%.exe
-echo  - Cai dat: chay file Setup (khong can quyen admin)
-echo  - Go cai dat: Settings ^> Apps ^> Ticket Analyzer, hoac Start menu ^> Uninstall Ticket Analyzer
-goto :eof
+echo Xong, thu muc dist chua:
+echo  - TicketAnalyzer-Setup-%VER%.exe : bo cai (khong can quyen admin)
+echo  - TicketAnalyzer-Uninstall.bat    : bo go ^(hoac Settings ^> Apps ^> Ticket Analyzer^)
+explorer /select,"%SETUP%"
+echo.
+pause
+exit /b 0
+
+:fail
+echo.
+pause
+exit /b 1
 
 :findiscc
 set "ISCC="

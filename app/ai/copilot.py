@@ -1,4 +1,4 @@
-"""GitHub Copilot CLI provider (`copilot -p ... -s`).
+"""GitHub Copilot CLI provider (`copilot -p ... --output-format json`).
 
 Material is never inlined into the command line (Windows caps it at ~32k
 chars): files live in the run folder and the prompt tells the agent which ones
@@ -13,10 +13,98 @@ import threading
 from pathlib import Path
 
 from ..mcp import child_env
+from . import stopflag
 
 PACKAGE = "@github/copilot"
 _lock = threading.Lock()
 _current = {"proc": None}
+_USAGE_FIELDS = {
+    "input_tokens": "inputTokens",
+    "output_tokens": "outputTokens",
+    "cache_read_tokens": "cacheReadTokens",
+    "cache_write_tokens": "cacheWriteTokens",
+    "reasoning_tokens": "reasoningTokens",
+}
+
+
+def _count(value):
+    try:
+        return max(0, int(value)) if not isinstance(value, bool) else 0
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
+def _parse_output(text):
+    """Extract the final text and per-model usage events from Copilot JSONL output."""
+    messages = []
+    final_messages = []
+    usage = {key: 0 for key in _USAGE_FIELDS}
+    usage["model_calls"] = 0
+    saw_event = False
+    for line in text.splitlines():
+        try:
+            event = json.loads(line)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(event, dict):
+            continue
+        event_type = event.get("type")
+        data = event.get("data")
+        if not isinstance(data, dict):
+            continue
+        if event_type == "assistant.message":
+            saw_event = True
+            content = data.get("content")
+            if isinstance(content, str) and content.strip():
+                messages.append(content.strip())
+                if not data.get("toolRequests") and not data.get("tool_requests"):
+                    final_messages.append(content.strip())
+        elif event_type == "assistant.usage":
+            saw_event = True
+            usage["model_calls"] += 1
+            for key, source in _USAGE_FIELDS.items():
+                usage[key] += _count(data.get(source))
+
+    if not saw_event:
+        return text.strip(), None
+    return "\n\n".join(final_messages or messages).strip(), usage
+
+
+def _notify_usage(on_usage, usage):
+    if not on_usage or not usage or not usage.get("model_calls"):
+        return
+    try:
+        on_usage(usage)
+    except Exception:
+        pass  # Accounting must never make an otherwise successful AI call fail.
+
+
+def _execute(args, cwd, timeout, cancellable):
+    with _lock:
+        if cancellable and stopflag.requested.is_set():
+            raise CopilotError("Cancelled")
+        proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
+                                cwd=str(cwd), env=child_env({"NO_COLOR": "1"}),
+                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        _current["proc"] = proc
+        if cancellable and stopflag.requested.is_set():  # Stop landed between the check and the launch
+            cancel()
+        timed_out = False
+        try:
+            out, err = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            proc.kill()
+            timed_out = True
+            out, err = exc.output or b"", exc.stderr or b""
+        finally:
+            _current["proc"] = None
+    return proc, out, err, timed_out
+
+
+def _unsupported_json_output(detail):
+    message = str(detail or "").lower()
+    return "--output-format" in message and any(
+        text in message for text in ("unknown option", "unrecognized option", "unknown argument"))
 
 
 class CopilotError(RuntimeError):
@@ -67,30 +155,35 @@ def version():
         return None
 
 
-def ask(prompt, cwd, model="", timeout=900):
+def ask(prompt, cwd, model="", timeout=900, cancellable=False, effort=None, context=None, on_usage=None):
     cmd = command()
     if not cmd:
         raise CopilotError("Copilot CLI is not installed. Open Setup.")
-    args = [*cmd, "-p", prompt, "-s", "--no-auto-update", "--stream", "off",
+    args = [*cmd, "-p", prompt, "--output-format", "json", "-s", "--no-auto-update", "--stream", "off",
             "--allow-all-tools", "--deny-tool", "shell", "--deny-tool", "write",
             "--disable-builtin-mcps", "-C", str(cwd)]
     if model:
         args += ["--model", model]
-    with _lock:
-        proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
-                                cwd=str(cwd), env=child_env({"NO_COLOR": "1"}),
-                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-        _current["proc"] = proc
-        try:
-            out, err = proc.communicate(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            raise CopilotError(f"Copilot CLI timed out after {timeout}s")
-        finally:
-            _current["proc"] = None
-    text = out.decode("utf-8", "replace").strip()
+    if context:
+        args += ["--context", context]
+    if effort:
+        args += ["--effort", effort]
+    proc, out, err, timed_out = _execute(args, cwd, timeout, cancellable)
+    raw = (out or b"").decode("utf-8", "replace")
+    text, usage = _parse_output(raw)
+    detail = err.decode("utf-8", "replace").strip() or text or raw.strip()
+    if not timed_out and proc.returncode != 0 and _unsupported_json_output(detail):
+        fallback_args = args[:]
+        option = fallback_args.index("--output-format")
+        del fallback_args[option:option + 2]
+        proc, out, err, timed_out = _execute(fallback_args, cwd, timeout, cancellable)
+        raw = (out or b"").decode("utf-8", "replace")
+        text, usage = _parse_output(raw)
+    _notify_usage(on_usage, usage)
+    if timed_out:
+        raise CopilotError(f"Copilot CLI timed out after {timeout}s")
     if proc.returncode != 0:
-        detail = (err.decode("utf-8", "replace").strip() or text)[-1500:]
+        detail = (err.decode("utf-8", "replace").strip() or text or raw.strip())[-1500:]
         if not detail:
             detail = "no output (cancelled?)"
         if any(k in detail.lower() for k in ("/login", "authenticat", "not logged", "unauthorized")):

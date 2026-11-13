@@ -18,8 +18,9 @@ const fs = require('fs');
 const path = require('path');
 const { scanSource } = require('./src/scanner');
 const { renderCatalog, parseCatalog } = require('./src/catalog');
-const { sliceLog, renderBrief } = require('./src/slicer');
-const { readOne, clockOf, fmtClock } = require('./src/formats');
+const { sliceLog } = require('./src/slicer');
+const { renderBoundedBrief, budgetLimit } = require('./src/budget');
+const { readOne, clockOf, fmtClock, parseClock, FORMAT_NAMES } = require('./src/formats');
 
 // Used when no source folder is available: the slicer then seeds purely from
 // extraGrep (AI keywords + error signals) inside the time window.
@@ -41,6 +42,7 @@ function scan(q) {
 
 function slice(q) {
   const catalog = q.catalog ? parseCatalog(fs.readFileSync(q.catalog, 'utf8')) : NO_SOURCE_CATALOG;
+  if (!Array.isArray(catalog.entries)) throw new Error('Catalog payload has no entries array');
   const extraGrep = [...(q.extraGrep || [])];
   if (!q.catalog) extraGrep.push(...ERROR_SIGNALS);
   const opt = {
@@ -48,7 +50,7 @@ function slice(q) {
     before: q.before ?? 5,
     after: q.after ?? 12,
     windowMs: q.windowMs ?? 300,
-    budgetTokens: q.budgetTokens ?? 50000,
+    budgetTokens: budgetLimit(q.budgetTokens ?? 50000),
     maxRepeat: q.maxRepeat ?? 3,
     minLevel: q.minLevel || '',
     minScore: q.minScore ?? 0,
@@ -59,17 +61,45 @@ function slice(q) {
     timeStart: q.timeStart || '',
     timeEnd: q.timeEnd || '',
   };
+  for (const value of [opt.timeStart, opt.timeEnd]) {
+    if (value && parseClock(value) === null) throw new Error('Invalid time window: use HH:MM:SS[.mmm]');
+  }
+  if (!FORMAT_NAMES.includes(opt.parser)) throw new Error('Unknown log parser');
+  // An empty source catalog should still allow generic error/keyword evidence.
+  if (!catalog.entries.length) {
+    catalog.entries = NO_SOURCE_CATALOG.entries;
+    opt.extraGrep.push(...ERROR_SIGNALS);
+    opt.services = [];
+  }
   const result = sliceLog(q.files, catalog, opt);
-  fs.writeFileSync(q.out, renderBrief(result, opt), 'utf8');
-  const s = result.stats;
+  const bounded = renderBoundedBrief(result, opt);
+  fs.writeFileSync(q.out, bounded.text, 'utf8');
+  const s = bounded.stats;
   return {
     out: q.out,
     stats: {
       totalLines: s.totalLines, kept: s.kept, tokens: s.tokens, chunkCount: s.chunkCount,
       firedCount: s.firedCount, timeWindow: s.timeWindow || null,
-      sources: (s.sources || []).map((x) => ({ name: x.name, format: x.format, lines: x.lines, kept: x.kept })),
+      afterTime: s.afterTime, tokenUpperBound: s.tokenUpperBound, tokenEstimate: s.tokenEstimate,
+      seeds: s.seeds, seedsKept: s.seedsKept, regionsDroppedForBudget: s.seedsDropped,
+      budgetTokens: s.budgetTokens, tokenCounting: s.tokenCounting, outputBytes: s.outputBytes,
+      outputTruncated: s.outputTruncated, compactMetadata: s.compactMetadata,
+      sources: (s.sources || []).map((x) => ({ file: x.file, name: x.name, format: x.format, lines: x.lines, kept: x.kept })),
     },
   };
+}
+
+function catalogInfo(q) {
+  const data = parseCatalog(fs.readFileSync(q.catalog, 'utf8'));
+  if (!Array.isArray(data.entries)) throw new Error('Catalog payload has no entries array');
+  const services = new Map();
+  for (const entry of data.entries) {
+    const item = services.get(entry.service) || { name: entry.service, statements: 0, errors: 0 };
+    item.statements++;
+    if (['E', 'F'].includes(entry.level)) item.errors++;
+    services.set(entry.service, item);
+  }
+  return { stats: data.stats || {}, services: [...services.values()].sort((a, b) => b.statements - a.statements) };
 }
 
 function span(q) {
@@ -93,7 +123,7 @@ function span(q) {
   };
 }
 
-const COMMANDS = { scan, slice, span };
+const COMMANDS = { scan, slice, span, 'catalog-info': catalogInfo };
 
 function main() {
   const [command, requestFile] = process.argv.slice(2);
