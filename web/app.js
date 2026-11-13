@@ -11,8 +11,8 @@ const PREVIEW_STEP_MS = 500;
 const S = {
   state: null,           // /api/state
   run: null,             // current run object (null = draft)
-  draft: { log_files: [], source_dir: '', auto_attachments: false, use_codegraph: true, use_infographic: true,
-    continue_on_optional_error: false, auto_publish_to_collab: false },
+  draft: { log_files: [], source_dir: '', gate: 'skip', auto_attachments: true, use_codegraph: true,
+    use_infographic: true, auto_publish_to_collab: false },
   selected: null,        // step id open in the drawer
   tab: null,             // artifact name open in the drawer
   editing: false,
@@ -45,12 +45,20 @@ function toast(msg, err = false) {
 }
 const guard = (fn) => async (...a) => { try { await fn(...a); } catch (e) { toast(e.message, true); } };
 
+// A new ticket starts from the "defaults for a new ticket" in Settings.
+function freshDraft() {
+  const s = S.state.settings;
+  return { log_files: [], source_dir: '', gate: s.default_gate || 'skip',
+    auto_attachments: s.default_use_attachments !== false, use_codegraph: s.default_use_codegraph !== false,
+    use_infographic: s.default_use_infographic !== false, auto_publish_to_collab: !s.review_before_publish };
+}
+
 // ---------------------------------------------------------------- boot
 async function boot() {
   I18N.apply();
   S.state = await api('/api/state');
   I18N.set(S.state.settings.lang);
-  S.draft.auto_publish_to_collab = !S.state.settings.review_before_publish;
+  S.draft = freshDraft();
   renderMode();
   renderHistory();
   renderAll();
@@ -72,7 +80,7 @@ function connect() {
     } else if (m.type === 'busy') {
       if (m.busy && S.preview) stopPreview();
       S.state.busy = m.busy; S.state.busy_run = m.busy ? m.run_id : null; renderInputs(); renderButtons(); renderFlow();
-      if (!m.busy) { maybePromptAttachments(); refreshDoctor(); }
+      if (!m.busy) { maybePromptGate(); refreshDoctor(); }
       if (S.selected === 'log') refreshDrawer();
     } else if (m.type === 'doctor_log') {
       const el = $('#doctorLog'); el.textContent += m.line + '\n'; el.scrollTop = el.scrollHeight;
@@ -84,7 +92,7 @@ function connect() {
     } else if (m.type === 'settings') {
       S.state.settings = m.settings; renderMode();
       if (!S.run) {
-        S.draft.auto_publish_to_collab = !m.settings.review_before_publish;
+        S.draft = { ...freshDraft(), log_files: S.draft.log_files, source_dir: S.draft.source_dir };
         renderInputs();
       }
     }
@@ -252,8 +260,7 @@ async function openRun(id) {
 
 $('#newRun').onclick = () => {
   S.run = null;
-  S.draft = { log_files: [], source_dir: '', auto_attachments: false, use_codegraph: true, use_infographic: true,
-    continue_on_optional_error: false, auto_publish_to_collab: !S.state.settings.review_before_publish };
+  S.draft = freshDraft();
   $('#issue').value = '';
   $('#console').textContent = '';
   $('#consoleCount').textContent = '';
@@ -283,8 +290,10 @@ function renderInputs() {
   $('#logMode').value = logOptions().mode;
   $('#logMode').disabled = !!S.state.busy;
   $('#useCodeGraph').checked = inputs().use_codegraph !== false;
-  $('#continueOnOptionalError').checked = inputs().continue_on_optional_error === true;
-  $('#continueOnOptionalError').disabled = !!S.state.busy;
+  for (const b of document.querySelectorAll('.gate-btn')) {
+    b.setAttribute('aria-checked', String(b.dataset.gate === (inputs().gate || 'skip')));
+    b.disabled = !!S.state.busy;
+  }
   $('#infographicAuto').checked = inputs().use_infographic !== false;
   $('#infographicAuto').disabled = !!S.state.busy;
   $('#autoPublishCollab').checked = inputs().auto_publish_to_collab === true;
@@ -293,7 +302,12 @@ function renderInputs() {
 }
 $('#autoAtt').onchange = guard(() => setInputs({ auto_attachments: $('#autoAtt').checked }));
 $('#useCodeGraph').onchange = guard(() => setInputs({ use_codegraph: $('#useCodeGraph').checked }));
-$('#continueOnOptionalError').onchange = guard(() => setInputs({ continue_on_optional_error: $('#continueOnOptionalError').checked }));
+for (const b of document.querySelectorAll('.gate-btn')) {
+  b.onclick = guard(async () => {
+    await setInputs({ gate: b.dataset.gate });
+    toast(t('gate.saved', { m: t('gate.' + b.dataset.gate) }));
+  });
+}
 $('#infographicAuto').onchange = guard(() => setInputs({ use_infographic: $('#infographicAuto').checked }));
 $('#autoPublishCollab').onchange = guard(async () => {
   const enabled = $('#autoPublishCollab').checked;
@@ -337,14 +351,30 @@ $('#runAll').onclick = guard(async () => {
   renderAll();
   scheduleHistory();
 });
+$('#resumeBtn').onclick = guard(async () => {
+  await api(`/api/runs/${encodeURIComponent(S.run.id)}/start`, { body: { resume: true } });
+  S.state.busy = true;
+  renderButtons();
+});
 $('#issue').onkeydown = (e) => { if (e.key === 'Enter') $('#runAll').click(); };
 $('#issue').oninput = () => { if (!S.run) { renderFlow(); renderButtons(); } };
 $('#stopBtn').onclick = guard(() => api('/api/stop', { body: {} }));
+
+// "Continue" makes sense when the run moved forward but has steps left that are not just the publish gate.
+function resumable() {
+  if (!S.run || S.state.busy || S.preview) return false;
+  const statuses = Object.values(S.run.steps).map((st) => st.status);
+  if (!statuses.some((x) => x === 'done')) return false;
+  if (S.run.pending_gate) return false; // the gate panel is the way forward, not a blind re-run
+  return statuses.some((x) => ['idle', 'stale', 'error'].includes(x))
+    || (S.run.steps.log.status === 'waiting');
+}
 
 function renderButtons() {
   const busy = S.state.busy;
   $('#runAll').hidden = busy;
   $('#stopBtn').hidden = !busy;
+  $('#resumeBtn').hidden = busy || !resumable();
   $('#runAll').innerHTML = `<svg viewBox="0 0 24 24" width="18" height="18"><use href="#i-play"/></svg> ${esc(t(S.run ? 'run.again' : 'run.all'))}`;
   $('#runOnly').disabled = $('#runFrom').disabled = busy || !(S.run || $('#issue').value.trim());
   const previewing = !!S.preview;
@@ -477,14 +507,22 @@ function duration(st) {
 const DEPS = { jira: [], understand: ['jira'], log: ['jira'], graph: ['jira'], analyze: ['jira'], format: ['analyze'], infographic: ['analyze'], collab: ['format'] };
 const isDone = (id) => S.run && ['done', 'stale', 'waiting'].includes(S.run.steps[id].status);
 
+// Logs may come from picked files or from the ticket's own attachments (unknown until Jira ran).
+function mayHaveLogs() {
+  const inp = inputs();
+  if (inp.log_files.length) return true;
+  if (!inp.auto_attachments) return false;
+  if (S.run && isDone('jira')) {
+    return (S.run.attachments || []).some((a) => a.kind !== 'other');
+  }
+  return true; // not fetched yet: assume the ticket may have logs
+}
+
 function hasInputs(id) {
   const inp = inputs();
   if (id === 'jira') return !!S.run || !!$('#issue').value.trim();
-  const pendingAttachmentLogs = !!inp.auto_attachments
-    && (!S.run || !isDone('jira') || !!S.run.pending_attachments);
-  const hasLogs = inp.log_files.length > 0 || pendingAttachmentLogs;
-  if (id === 'understand') return hasLogs;
-  if (id === 'log') return hasLogs;
+  if (id === 'understand') return mayHaveLogs() && inp.gate !== 'manual';
+  if (id === 'log') return mayHaveLogs() && !(S.run && (S.run.gate_state || {}).skip_logs);
   if (id === 'graph') return !!inp.source_dir && inp.use_codegraph !== false;
   if (id === 'infographic') return inp.use_infographic !== false;
   return true;
@@ -492,11 +530,14 @@ function hasInputs(id) {
 
 function optionalReason(id) {
   const inp = inputs();
-  const pendingAttachmentLogs = !!inp.auto_attachments
-    && (!S.run || !isDone('jira') || !!S.run.pending_attachments);
-  const hasLogs = inp.log_files.length > 0 || pendingAttachmentLogs;
-  if (id === 'understand') return hasLogs ? null : 'opt.needLogs';
-  if (id === 'log') return !hasLogs ? 'opt.needLogs' : null;
+  if (id === 'understand') {
+    if (inp.gate === 'manual' && mayHaveLogs()) return 'opt.manualGate';
+    return mayHaveLogs() ? null : 'opt.needLogs';
+  }
+  if (id === 'log') {
+    if (S.run && (S.run.gate_state || {}).skip_logs) return 'opt.logsSkipped';
+    return !mayHaveLogs() ? 'opt.needLogs' : null;
+  }
   if (id === 'graph') return inp.use_codegraph === false ? 'opt.graphDisabled' : !inp.source_dir ? 'opt.needSource' : null;
   if (id === 'infographic') return inp.use_infographic === false ? 'opt.infographicDisabled' : null;
   return null;
@@ -530,11 +571,9 @@ function renderFlow() {
         error: '',
       };
     }
-    const waitingForAttachments = !!(S.run && S.run.pending_attachments)
-      && ['understand', 'log'].includes(s.id) && ['idle', 'stale'].includes(status);
-    if (!preview && skipReason && ['idle', 'stale'].includes(status) && !waitingForAttachments) status = 'skipped';
+    if (!preview && skipReason && ['idle', 'stale'].includes(status)) status = 'skipped';
     // While any step runs, every other not-yet-done step just waits its turn.
-    const waiting = !preview && (runningHere || waitingForAttachments) && ['idle', 'stale'].includes(status);
+    const waiting = !preview && runningHere && ['idle', 'stale'].includes(status);
     if (waiting) status = 'idle';
     const r = preview
       ? { kind: status === 'idle' ? 'wait' : null, missing: [] }
@@ -551,7 +590,9 @@ function renderFlow() {
     const gear = status === 'running'
       ? '<span class="gear"><svg><use href="#i-gear"/></svg></span><span class="gear small"><svg><use href="#i-gear"/></svg></span>' : '';
     const publish = s.id === 'collab' && status === 'waiting'
-      ? `<button class="btn btn-primary btn-sm publish-btn" data-publish>${esc(t('publish'))}</button>` : '';
+      ? `<button class="btn btn-primary btn-sm publish-btn" data-publish>${esc(t('publish'))}</button>`
+      : s.id === 'log' && status === 'waiting' && S.run && S.run.pending_gate && !S.state.busy
+        ? `<button class="btn btn-primary btn-sm publish-btn" data-gate-open>${esc(t('gate.open'))}</button>` : '';
     return `<li class="node s-${status} ${r.kind ? 'is-' + r.kind : ''} ${S.selected === s.id ? 'selected' : ''}" data-step="${s.id}" tabindex="0">
       <div class="node-top">
         <div class="node-icon"><svg><use href="#s-${s.id}"/></svg>${gear}</div>
@@ -573,6 +614,8 @@ function renderFlow() {
   }
   const pub = $('#flow [data-publish]');
   if (pub) pub.onclick = guard(() => startStep('collab', true, true));
+  const gate = $('#flow [data-gate-open]');
+  if (gate) gate.onclick = () => openDrawer('log');
 }
 
 function renderHead() {
@@ -598,7 +641,7 @@ function renderAll() {
   renderFlow();
   renderButtons();
   renderUsagePanel();
-  maybePromptAttachments();
+  maybePromptGate();
   renderAttProgress();
 }
 
@@ -615,23 +658,34 @@ function renderUsagePanel() {
     return;
   }
 
-  const usage = S.run.copilot_usage || {};
-  const modelCalls = Math.max(0, Number(usage.model_calls) || 0);
-  const hasUsage = S.run.ai_mode === 'copilot' && modelCalls > 0;
-  const totalTokens = hasUsage ? Number(usage.input_tokens || 0) + Number(usage.output_tokens || 0) : null;
+  const total = S.run.usage_total || {};
+  const hasUsage = Number(total.model_calls) > 0;
+  const estMark = total.estimated ? ' ~' : '';
+  const totalTokens = hasUsage ? Number(total.total_tokens || 0) : null;
   const totalSeconds = S.state.steps.reduce((sum, step) => sum + stepElapsedSeconds(S.run.steps[step.id]), 0);
-  const tokenNote = S.run.ai_mode !== 'copilot'
-    ? t('usage.m365NoTokens')
-    : hasUsage ? t('usage.modelCalls', { n: formatCount(modelCalls) }) : t('usage.notMeasured');
+  const tokenNote = hasUsage
+    ? t('usage.modelCalls', { n: formatCount(total.model_calls) }) + (total.estimated ? ' · ' + t('usage.estimated') : '')
+    : t('usage.notMeasured');
   const tokenBreakdown = hasUsage
     ? `<div class="usage-detail-grid">
-        <div><span>${esc(t('usage.inputTokens'))}</span><strong>${formatCount(usage.input_tokens)}</strong></div>
-        <div><span>${esc(t('usage.outputTokens'))}</span><strong>${formatCount(usage.output_tokens)}</strong></div>
-        <div><span>${esc(t('usage.cacheReadTokens'))}</span><strong>${formatCount(usage.cache_read_tokens)}</strong></div>
-        <div><span>${esc(t('usage.cacheWriteTokens'))}</span><strong>${formatCount(usage.cache_write_tokens)}</strong></div>
-        <div><span>${esc(t('usage.reasoningTokens'))}</span><strong>${formatCount(usage.reasoning_tokens)}</strong></div>
+        <div><span>${esc(t('usage.inputTokens'))}</span><strong>${formatCount(total.input_tokens)}</strong></div>
+        <div><span>${esc(t('usage.outputTokens'))}</span><strong>${formatCount(total.output_tokens)}</strong></div>
+        <div><span>${esc(t('usage.cacheReadTokens'))}</span><strong>${formatCount(total.cache_read_tokens)}</strong></div>
+        <div><span>${esc(t('usage.cacheWriteTokens'))}</span><strong>${formatCount(total.cache_write_tokens)}</strong></div>
+        <div><span>${esc(t('usage.reasoningTokens'))}</span><strong>${formatCount(total.reasoning_tokens)}</strong></div>
       </div><p class="usage-note">${esc(tokenNote)} · ${esc(t('usage.tokenDefinition'))}</p>`
     : `<p class="usage-note">${esc(tokenNote)}</p>`;
+  // One row per press of Run ("lượt chạy"): re-running the same ticket adds a pass, never overwrites.
+  const passes = (S.run.usage_passes || []).map((pass) => {
+    const mark = pass.estimated ? '~' : '';
+    const open = pass.ended == null ? ' <span class="tag">' + esc(t('usage.passRunning')) + '</span>' : '';
+    return `<li class="usage-step"><span class="usage-step-name">${esc(t('usage.pass', { n: pass.n }))}
+      <small>${esc(t('step.' + (pass.from || 'jira')))} · ${esc(pass.ai_mode === 'copilot' ? 'Copilot CLI' : 'M365')}${open}</small></span>
+      <strong>${mark}${formatCount(pass.total_tokens)} tok · ${formatDuration(pass.seconds)}</strong></li>`;
+  }).join('');
+  const passSection = passes
+    ? `<section class="usage-step-section"><h3>${esc(t('usage.passes', { n: (S.run.usage_passes || []).length }))}</h3>
+       <ul class="usage-steps">${passes}</ul><p class="usage-note">${esc(t('usage.passHint'))}</p></section>` : '';
   const rows = S.state.steps.map((step) => {
     const state = S.run.steps[step.id] || {};
     const hasTime = state.started != null || state.ended != null || Number(state.elapsed_seconds) > 0;
@@ -642,10 +696,11 @@ function renderUsagePanel() {
   panel.innerHTML = `<div class="usage-content">
     <div class="usage-summary">
       <article class="usage-stat"><span class="usage-label">${esc(t('usage.totalTokens'))}</span>
-        <strong class="usage-value">${totalTokens == null ? '—' : formatCount(totalTokens)}</strong>${tokenBreakdown}</article>
+        <strong class="usage-value">${totalTokens == null ? '—' : estMark + formatCount(totalTokens)}</strong>${tokenBreakdown}</article>
       <article class="usage-stat"><span class="usage-label">${esc(t('usage.totalTime'))}</span>
         <strong class="usage-value">${formatDuration(totalSeconds)}</strong><p class="usage-note">${esc(t('usage.stepSumHint'))}</p></article>
     </div>
+    ${passSection}
     <section class="usage-step-section"><h3>${esc(t('usage.stepBreakdown'))}</h3><ul class="usage-steps">${rows}</ul></section>
   </div>`;
 }
@@ -757,7 +812,7 @@ function renderDrawer(reloadViewer) {
 function renderExtra(step, st) {
   const box = $('#drawerExtra');
   box.classList.toggle('logsleuth-extra', step === 'log');
-  if (step === 'log' && box.querySelector('#lsForm') && box.contains(document.activeElement) && !S.state.busy) return;
+  if (step === 'log' && box.querySelector('#lsForm, .gate-panel') && box.contains(document.activeElement) && !S.state.busy) return;
   let html = st.error ? `<div class="err-box" style="margin:0 0 10px">${esc(st.error)}</div>` : '';
   if (step === 'jira') {
     html += attachmentsPanel();
@@ -801,11 +856,75 @@ function renderExtra(step, st) {
   }
   if ($('#pubNow')) $('#pubNow').onclick = guard(() => startStep('collab', true, true));
   if (step === 'jira') bindAttachments();
-  if (step === 'log' && $('#lsForm')) bindLogPanel();
+  if (step === 'log' && $('#gateRun')) bindGatePanel();
+  else if (step === 'log' && $('#lsForm')) bindLogPanel();
+}
+
+// The evidence gate: confirm/enter which attachments to download, the time window and the clock shift.
+function gatePanel() {
+  const g = S.run.pending_gate;
+  const f = S.run.focus || {};
+  const review = g.mode === 'review';
+  const list = (S.run.attachments || []).filter((a) => a.kind !== 'other');
+  const suggested = new Set(g.suggested || []);
+  const rows = list.map((a, i) => {
+    const reason = g.reasons && g.reasons[a.filename] ? `<div class="muted small">${esc(g.reasons[a.filename])}</div>` : '';
+    const badges = [a.analyzed ? t('att.analyzed') : a.path ? t('att.have') : ''].filter(Boolean)
+      .map((b) => ` <span class="tag ok">${esc(b)}</span>`).join('');
+    return `<label class="att-row"><input type="checkbox" data-gate-i="${i}" ${suggested.has(a.filename) ? 'checked' : ''}>
+      <span class="att-name">${esc(a.filename)}${badges}${reason}</span>
+      <span class="tag">${esc(t('att.kind.' + a.kind))}</span><span class="muted small att-size">${fmtSize(a.size || 0)}</span></label>`;
+  }).join('');
+  const picked = inputs().log_files || [];
+  const shift = inputs().log_shift_minutes;
+  const zone = f.ticket_utc_offset ? t('gate.zone', { z: f.ticket_utc_offset }) : t('gate.noZone');
+  const reason = f.reason ? `<p class="muted small">AI: ${esc(f.reason)}</p>` : '';
+  return `<div class="ls-panel gate-panel">
+    ${g.problem ? `<div class="err-box" style="margin:0 0 10px">${esc(g.problem)}</div>` : ''}
+    <p class="muted small">${esc(t(review ? 'gate.introReview' : 'gate.introManual'))}</p>
+    ${reason}
+    ${list.length ? `<div class="att-list">${rows}</div>` : `<p class="muted small">${esc(t('gate.noAttachments'))}</p>`}
+    ${picked.length ? `<p class="muted small">${esc(t('gate.ownLogs', { n: picked.length }))}</p>` : ''}
+    <button type="button" class="btn btn-sm" id="gateAddLogs">${esc(t('in.pickLogs'))}</button>
+    <div class="ls-grid" style="margin-top:10px">
+      <div class="field"><label for="gateStart">${esc(t('focus.from'))}</label><input id="gateStart" placeholder="HH:MM:SS" value="${esc(f.time_start || '')}"></div>
+      <div class="field"><label for="gateEnd">${esc(t('focus.to'))}</label><input id="gateEnd" placeholder="HH:MM:SS" value="${esc(f.time_end || '')}"></div>
+      <div class="field"><label for="gateShift">${esc(t('gate.shift'))}</label><input id="gateShift" type="number" step="30" min="-840" max="840" placeholder="${esc(t('gate.shiftAuto'))}" value="${shift == null ? '' : esc(String(shift))}"></div>
+    </div>
+    <p class="muted small">${esc(zone)} · ${esc(t('gate.shiftHelp'))}</p>
+    <div class="ls-actions">
+      <button type="button" class="btn btn-primary" id="gateRun">${esc(t('gate.run'))}</button>
+      <button type="button" class="btn" id="gateSkipLogs">${esc(t('gate.skipLogs'))}</button>
+    </div></div>`;
+}
+
+function bindGatePanel() {
+  $('#gateAddLogs').onclick = guard(async () => {
+    const { paths } = await api('/api/pick', { body: { kind: 'files' } });
+    if (paths.length) { await setInputs({ log_files: [...new Set([...inputs().log_files, ...paths])] }); renderDrawer(false); }
+  });
+  const answer = (body) => guard(async () => {
+    await api(`/api/runs/${encodeURIComponent(S.run.id)}/gate`, { body });
+    S.state.busy = true;
+    closeDrawer();
+    renderButtons();
+  });
+  $('#gateRun').onclick = () => {
+    const list = (S.run.attachments || []).filter((a) => a.kind !== 'other');
+    const names = [...document.querySelectorAll('[data-gate-i]')].filter((b) => b.checked).map((b) => list[+b.dataset.gateI].filename);
+    const shiftText = $('#gateShift').value.trim();
+    const body = { names, time_start: $('#gateStart').value.trim(), time_end: $('#gateEnd').value.trim() };
+    if (shiftText !== '') body.shift_minutes = Number(shiftText);
+    else body.shift_minutes = null;
+    if (!names.length && !inputs().log_files.length) { toast(t('gate.needSomething'), true); return; }
+    answer(body)();
+  };
+  $('#gateSkipLogs').onclick = answer({ skip_logs: true });
 }
 
 // LogSleuth: the original Scan -> catalog/service selection -> Slice workflow.
 function logPanel() {
+  if (S.run && S.run.pending_gate && S.run.steps.log.status === 'waiting') return gatePanel();
   const o = logOptions(), manual = o.mode === 'manual', busy = !!S.state.busy;
   if (!manual) {
     const files = inputs().log_files || [];
@@ -956,7 +1075,7 @@ function openAttachments() {
       <span class="att-name">${esc(a.filename)}${badges}</span>
       <span class="tag">${esc(t('att.kind.' + a.kind))}</span><span class="muted small att-size">${fmtSize(a.size || 0)}</span></label>`;
   }).join('') : `<div class="muted small">${esc(t('att.none'))}</div>`;
-  $('#attSkip').textContent = t(run.pending_attachments ? 'att.skip' : 'att.close');
+  $('#attSkip').textContent = t('att.close');
   updateAttSelection();
   openModal('#attModal');
 }
@@ -973,14 +1092,14 @@ function updateAttSelection() {
   $('#attRun').disabled = n === 0;
 }
 
-// Pause point of the pipeline: after the Jira step, ask which attachments to fetch.
-function maybePromptAttachments() {
-  const pending = S.run && S.run.pending_attachments;
+// Pause point of the pipeline: the evidence gate at the Log step (Review / Manual).
+function maybePromptGate() {
+  const pending = S.run && S.run.pending_gate;
   if (!pending || S.state.busy || S.preview) return;
-  const key = `${S.run.id}:${S.run.steps.jira.ended}`;
-  if (S.attPrompted === key) return;
-  S.attPrompted = key;
-  openAttachments();
+  const key = `${S.run.id}:${S.run.steps.log.ended}:${pending.problem || ''}`;
+  if (S.gatePrompted === key) return;
+  S.gatePrompted = key;
+  openDrawer('log');
 }
 
 $('#attList').onchange = updateAttSelection;
@@ -1023,18 +1142,9 @@ function renderAttProgress() {
   } else if (S.attWorking) {
     S.attWorking = false;
     $('#attProgModal').hidden = true;
-    // Stopped before the run could continue: bring the file menu back so the user can retry.
-    if (S.run && S.run.pending_attachments) { S.attPrompted = null; maybePromptAttachments(); }
   }
 }
-$('#attSkip').onclick = guard(async () => {
-  if (S.run && S.run.pending_attachments) {
-    await api(`/api/runs/${encodeURIComponent(S.run.id)}/attachments`, { body: { names: [] } });
-    S.state.busy = true;
-    renderButtons();
-  }
-  closeModals();
-});
+$('#attSkip').onclick = () => closeModals();
 
 const viewerKey = () => (S.run && S.selected ? `${S.run.id}/${S.tab}/${S.run.steps[S.selected].ended}/${S.run.steps[S.selected].status}/${I18N.lang}` : '');
 const fileUrl = (name) => `/api/runs/${encodeURIComponent(S.run.id)}/files/${encodeURIComponent(name)}`;

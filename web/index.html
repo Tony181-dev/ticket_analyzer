@@ -70,9 +70,11 @@
         <div class="field grow">
           <label for="issue" data-i18n="in.issue">Jira ticket</label>
           <input id="issue" data-i18n-ph="in.issue.ph" autocomplete="off">
-          <div class="check-help">
-            <label class="check small-check"><input type="checkbox" id="continueOnOptionalError"> <span data-i18n="in.continueOptionalErrors">Continue if steps 2, 3, or 4 fail</span></label>
-            <button type="button" class="help-icon" data-help="in.continueOptionalErrorsHelp" data-i18n-title="help.open" aria-label="?">?</button>
+          <div class="check-help mode-label"><label data-i18n="gate.label">Chế độ xử lý</label><button type="button" class="help-icon" data-help="gate.help" data-i18n-title="help.open" aria-label="?">?</button></div>
+          <div class="seg gate-seg" id="gateSeg" role="radiogroup" data-i18n-title="gate.label">
+            <button class="gate-btn" data-gate="skip" role="radio" data-i18n="gate.skip">Tự động</button>
+            <button class="gate-btn" data-gate="review" role="radio" data-i18n="gate.review">Duyệt</button>
+            <button class="gate-btn" data-gate="manual" role="radio" data-i18n="gate.manual">Tự nhập</button>
           </div>
           <div class="check-help">
             <label class="check small-check"><input type="checkbox" id="infographicAuto"> <span data-i18n="infographic.auto">Tự chạy bước 07 trong luồng</span></label>
@@ -111,6 +113,9 @@
         </div>
         <div class="run-actions">
           <button id="runAll" class="btn btn-primary btn-lg"></button>
+          <button id="resumeBtn" class="btn btn-lg" hidden>
+            <svg viewBox="0 0 24 24" width="18" height="18"><use href="#i-play"/></svg> <span data-i18n="run.resume">Tiếp tục</span>
+          </button>
           <button id="stopBtn" class="btn btn-danger btn-lg" hidden>
             <svg viewBox="0 0 24 24" width="18" height="18"><use href="#i-stop"/></svg> <span data-i18n="run.stop">Dừng</span>
           </button>
@@ -218,6 +223,14 @@
         <div class="field span2"><label for="s_dl"><span data-i18n="cfg.download">Thư mục tải đính kèm</span> <span class="muted" data-i18n="cfg.downloadHint"></span></label><input id="s_dl" name="download_dir"></div>
         <div class="field"><label for="s_axel"><span data-i18n="cfg.axel">axel</span> <span class="muted" data-i18n="cfg.axelHint"></span></label><input id="s_axel" name="axel_command" placeholder="axel.exe"></div>
         <div class="field"><label for="s_axelN" data-i18n="cfg.axelConn">Số kết nối axel</label><input id="s_axelN" name="axel_connections" type="number" min="1" max="64"></div>
+        <div class="field"><label for="s_gate" data-i18n="cfg.gate">Chế độ xử lý mặc định</label>
+          <select id="s_gate" name="default_gate">
+            <option value="skip" data-i18n="gate.skipLong">Tự động (Skip)</option>
+            <option value="review" data-i18n="gate.reviewLong">Duyệt (Review)</option>
+            <option value="manual" data-i18n="gate.manualLong">Tự nhập (Manual)</option>
+          </select></div>
+        <div class="field"><label for="s_dlcap"><span data-i18n="cfg.dlcap">Giới hạn tải tự động (MB)</span> <span class="muted" data-i18n="cfg.dlcapHint"></span></label><input id="s_dlcap" name="auto_download_max_mb" type="number" min="0" max="1000000" step="100"></div>
+        <div class="field"><label for="s_retries" data-i18n="cfg.retries">Số lần thử lại AI</label><input id="s_retries" name="ai_retries" type="number" min="0" max="3"></div>
       </div>
       <div class="check-help">
         <label class="check"><input type="checkbox" name="review_before_publish"> <span data-i18n="cfg.review"></span></label>

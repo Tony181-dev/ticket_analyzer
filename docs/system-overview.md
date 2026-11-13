@@ -31,14 +31,36 @@ flowchart LR
 
 | Bước | Tác vụ | Điều kiện | Kết quả / vai trò |
 |---|---|---|---|
-| 1. Jira | Lấy ticket và attachment metadata qua MCP | Luôn chạy | `01-jira.md`, JSON thô và danh sách attachment |
-| 2. Hiểu ticket | AI trích xuất giờ xảy ra sự cố được nêu rõ trong ticket | Có log | `02-understanding.md`, `02-focus.json`; không đọc log hay source ở bước này |
-| 3. Log brief | Chuẩn hóa log rồi dùng LogSleuth lọc tín hiệu, gom ngữ cảnh, giảm lặp và giới hạn dung lượng | Có log | `03-log-brief.md`; nếu có source thì thêm `03-catalog.md` và đối chiếu các câu lệnh log trong code; nếu không có source thì dùng từ khóa ticket và tín hiệu lỗi phổ biến |
-| 4. Code graph | Tạo đồ thị file/symbol/quan hệ và bản tóm tắt cho AI | Có source và bật Code Graph | HTML tương tác, JSON đầy đủ/thu gọn, report |
-| 5. Phân tích | AI tổng hợp ticket và các artifact đang hợp lệ | Luôn chạy | `05-analysis.md`; khi LogSleuth chỉ ra source location, đính kèm thêm đoạn code giới hạn quanh các dòng đó |
-| 6. Định dạng | AI đổi phân tích thành Confluence Storage XHTML; sửa cục bộ trước, chỉ gọi AI refine theo đoạn nếu còn lỗi | Luôn chạy | `06-report.xhtml`, bản preview, phản hồi thô và log refine |
-| 7. Infographic | Toggle Auto/Skip ngay tại Step 07; M365 tạo ảnh, Copilot CLI trả nội dung JSON để dựng SVG an toàn cục bộ | Auto chạy cùng pipeline; Skip bỏ qua. Khi Auto, lỗi tạo/đính ảnh chặn publish | `06-infographic.*`, đính kèm và nhúng vào trang Collab |
-| 8. Publish | Tạo trang hoặc cập nhật trang cùng tiêu đề nếu đã tồn tại | Sau bước duyệt; nếu infographic bật, chỉ hoàn tất sau khi ảnh được đính và trang được cập nhật | `07-collab.json` và URL trang |
+| 1. Jira | Lấy ticket và attachment metadata qua MCP | Luôn chạy | `01-jira.md`, JSON thô, `01-attachments.md` (bảng cho AI chọn) |
+| 2. Hiểu ticket | AI trích giờ sự cố *như ticket viết*, múi giờ ticket nêu, ngày, và chọn attachment đáng tải | Có thể có log; trừ chế độ Manual | `02-understanding.md`, `02-focus.json` (schema 2); không đọc log hay source |
+| 3. Log brief | Lấy log (tải attachment theo chế độ xử lý), căn khung giờ sang đồng hồ của log, rồi LogSleuth lọc tín hiệu, gom ngữ cảnh, giảm lặp, giới hạn dung lượng | Có log (file chọn tay hoặc attachment) | `03-log-brief.md`, `03-log-span.md` (khoảng giờ từng file + căn múi giờ), `03-catalog.md` khi có source; không source thì seed bằng từ khóa ticket + tín hiệu lỗi |
+| 4. Code graph | Đồ thị cấu trúc Python/C/C++/Java/Kotlin/JS/TS; bản cho AI xếp symbol liên quan ticket lên đầu | Có source và bật Code Graph | HTML tương tác, `04-graph.simple.json` (focus theo ticket), report |
+| 5. Phân tích | AI tổng hợp ticket và các artifact của bước đã thành công | Luôn chạy | `05-analysis.md`; kèm `05-source-evidence.md` quanh các `file:line` LogSleuth match |
+| 6. Định dạng | AI đổi phân tích thành Confluence Storage XHTML; sửa cục bộ trước, chỉ refine bằng AI nếu còn lỗi | Luôn chạy | `06-report.xhtml`, preview, phản hồi thô, log refine |
+| 7. Infographic | M365 tạo ảnh, lỗi thì fallback SVG cục bộ; Copilot CLI luôn dựng SVG từ JSON | Khi bật; lỗi không chặn publish | `06-infographic.*` |
+| 8. Publish | Tạo trang hoặc cập nhật trang trùng tiêu đề; đính ảnh nếu có, thiếu ảnh vẫn đăng và ghi chú | Sau duyệt (hoặc tự động nếu bật) | `07-collab.json` và URL trang |
+
+### Chế độ xử lý (evidence gate)
+
+Mỗi run có `gate`: **skip** (AI tự quyết trong giới hạn tải `auto_download_max_mb`, bước hỏng bị bỏ
+qua, chạy đến cuối), **review** (dừng ở bước Log với đề xuất của AI điền sẵn, người dùng xác nhận qua
+`POST /api/runs/<id>/gate`), **manual** (bước 2 không chạy; người dùng tự nhập tệp, khung giờ, lệch
+giờ). Tải attachment lỗi: skip ghi log rồi chạy tiếp không log; review/manual quay lại hỏi.
+
+### Căn múi giờ ([app/evidence/timealign.py](../app/evidence/timealign.py))
+
+Khung giờ bước 2 là "giờ ticket". Trước khi cắt log, app lấy first/last timestamp từng file
+(LogSleuth `span`, có đánh dấu file vắt qua nửa đêm) và thử các phương án giải thích được: cùng
+đồng hồ; log UTC + múi giờ ticket nêu; log UTC + múi giờ của chính timestamp Jira. Lệch đặt tay luôn
+thắng; đúng một phương án rơi vào khoảng log thì dùng; còn mơ hồ thì AI phá hoà theo `log-time.md`
+(câu trả lời bị từ chối nếu cửa sổ dịch xong vẫn ngoài log). Mọi bằng chứng và lựa chọn nằm trong
+`03-log-span.md`. Cửa sổ rỗng vẫn fallback quét toàn bộ log như trước.
+
+### Token theo lượt chạy
+
+Mỗi lần bấm Chạy mở một bản ghi trong `usage_passes` (từ bước nào, bao nhiêu token, bao lâu, theo
+từng bước); chạy lại cộng lượt mới. Copilot CLI đo thật qua usage events; M365 ước lượng byte/4 và
+đánh dấu `estimated`. `usage_total` cộng mọi lượt.
 
 ### Hai đường xử lý log
 

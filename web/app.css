@@ -560,3 +560,18 @@ body.preview-active .layout .node { cursor: wait; }
   max-width: min(640px, 92vw); padding: 10px 16px; border-radius: 10px; background: var(--ink); color: var(--bg); box-shadow: var(--shadow-lg);
 }
 .toast.err { background: var(--err); }
+
+/* handling-mode selector (Auto / Review / Manual) */
+.gate-seg { margin: 2px 0 4px; }
+.gate-btn {
+  border: 0; background: transparent; padding: 5px 12px; border-radius: 999px;
+  color: var(--ink-2); font-weight: 550; font-size: .85rem; cursor: pointer; transition: background .15s, color .15s;
+}
+.gate-btn[aria-checked="true"] { background: var(--surface); color: var(--accent); box-shadow: var(--shadow); }
+.gate-btn:disabled { opacity: .55; cursor: default; }
+
+/* evidence gate panel in the Log drawer */
+.gate-panel .att-list { max-height: 260px; overflow: auto; margin: 6px 0; }
+.gate-panel .att-row .muted.small { grid-column: 2; }
+#resumeBtn { border: 1px solid var(--line); background: var(--surface); color: var(--accent); }
+#resumeBtn:hover { border-color: var(--accent); }
