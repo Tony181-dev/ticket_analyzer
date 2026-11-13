@@ -121,8 +121,10 @@ def catalog_for(source_dir, force=False, options=None, cancel=lambda: None):
     return out
 
 
-def span(files):
-    return _run("span", {"files": [str(f) for f in files]}, timeout=600)["files"]
+def span(files, cancel=lambda: None):
+    """First/last timestamp of every log file (and whether it crosses midnight): the facts the
+    incident window is aligned against."""
+    return _run("span", {"files": [str(f) for f in files]}, timeout=600, cancel=cancel)["files"]
 
 
 def catalog_info(catalog, cancel=lambda: None):

@@ -71,9 +71,13 @@ class AttachmentTest(unittest.TestCase):
             encoding="utf-8")
         settings.save({"download_dir": str(cls.download_root), "ai_mode": "copilot"})
 
+        cls.broken_json = json.dumps({"key": "ATT-404", "summary": "BT fails", "attachments": [
+            {"id": "9", "filename": "gone.zip", "size": 10, "url": base + "/secure/attachment/9/gone.zip"}]})
+
         def fake_call(role, tool, args, timeout=120):
             if tool == "jira_get_issue":
-                return {"content": [{"type": "text", "text": cls.issue_json}]}
+                text = cls.broken_json if args["issue_key"] == "ATT-404" else cls.issue_json
+                return {"content": [{"type": "text", "text": text}]}
             raise AssertionError(tool)
         pipeline.mcp.call = fake_call
 
@@ -83,12 +87,17 @@ class AttachmentTest(unittest.TestCase):
                 return json.dumps({"title": "BT failure", "summary": "Connection fails.", "root_cause": "Status 133.",
                                    "timeline": [], "evidence": [], "actions": []})
             if "understand.md" in names:
-                return '```json\n{"time_start": "12:29:00", "time_end": "12:31:00", "keywords": ["status=133"]}\n```'
+                cls.understand_files.append(names)
+                wanted = "gone.zip" if "ATT-404" in prompt else "logs.zip"
+                picks = (', "attachments": [{"filename": "%s", "reason": "the log archive"}]' % wanted
+                         if "01-attachments.md" in names else "")
+                return '```json\n{"time_start": "12:29:00", "time_end": "12:31:00", "keywords": ["status=133"]' + picks + '}\n```'
             if "ticket-analysis.md" in names:
                 return "# Analysis"
             return "```json\n" + json.dumps('<ac:structured-macro ac:name="info"><ac:rich-text-body><p>x</p>'
                                             '</ac:rich-text-body></ac:structured-macro><p>ok</p>') + "\n```"
         pipeline.ai.ask = fake_ask
+        cls.understand_files = []
 
     @classmethod
     def tearDownClass(cls):
@@ -101,28 +110,34 @@ class AttachmentTest(unittest.TestCase):
             time.sleep(0.1)
         self.fail("timeout")
 
-    def test_attachment_menu_feeds_log_step(self):
-        run = pipeline.create("ATT-1", source_dir=str(self.source_dir), auto_attachments=True, use_codegraph=False)
-        pipeline.executor.start(run["id"], "jira", only=False)
+    def test_review_gate_downloads_what_the_user_confirms(self):
+        run = pipeline.create("ATT-1", source_dir=str(self.source_dir), auto_attachments=True, use_codegraph=False,
+                              gate="review")
+        before = HITS.count("/secure/attachment/1/logs.zip")
+        pipeline.executor.start(run["id"])
         self.wait()
         run = pipeline.get(run["id"])
         self.assertEqual(len(run["attachments"]), 2)
-        self.assertEqual(run["steps"]["jira"]["status"], "waiting", "run pauses for the attachment menu")
-        self.assertTrue(run["pending_attachments"]["resume"])
-        self.assertEqual(run["steps"]["understand"]["status"], "idle")
-        self.assertNotIn("/secure/attachment/1/logs.zip", HITS, "nothing is downloaded before the user chooses")
+        self.assertEqual(run["steps"]["jira"]["status"], "done")
+        self.assertEqual(run["steps"]["understand"]["status"], "done", run["steps"]["understand"]["error"])
+        self.assertIn("01-attachments.md", self.understand_files[-1], "the AI chooses from the attachment list")
+        self.assertEqual(run["steps"]["log"]["status"], "waiting", "the run pauses at the evidence gate")
+        self.assertEqual(run["pending_gate"]["mode"], "review")
+        self.assertEqual(run["pending_gate"]["suggested"], ["logs.zip"], "the AI's pick is pre-selected")
+        self.assertEqual(run["pending_gate"]["reasons"]["logs.zip"], "the log archive")
+        self.assertEqual(run["steps"]["analyze"]["status"], "idle")
+        self.assertEqual(HITS.count("/secure/attachment/1/logs.zip"), before, "nothing is downloaded before the user confirms")
 
-        pipeline.executor.fetch_attachments(run["id"], ["logs.zip"], None)
+        pipeline.executor.resolve_gate(run["id"], ["logs.zip"], None, "12:29", "12:31")
         self.wait()
         run = pipeline.get(run["id"])
         errors = {k: v["error"] for k, v in run["steps"].items() if v["error"]}
         self.assertEqual(errors, {})
-        self.assertNotIn("pending_attachments", run)
-        self.assertEqual(run["steps"]["jira"]["status"], "done")
+        self.assertNotIn("pending_gate", run)
         self.assertEqual([Path(f).name for f in run["inputs"]["log_files"]], ["main.log"], "png inside zip must be ignored")
         self.assertTrue(str(run["inputs"]["log_files"][0]).startswith(str(self.download_root / "ATT-1")))
-        self.assertEqual(run["steps"]["understand"]["status"], "done")
         self.assertEqual(run["steps"]["log"]["status"], "done")
+        self.assertEqual(run["steps"]["analyze"]["status"], "done")
         self.assertIn("status=133", (pipeline.run_dir(run["id"]) / "03-log-brief.md").read_text(encoding="utf-8"))
         self.assertNotIn("/secure/attachment/2/shot.png", HITS, "only the ticked files are fetched")
 
@@ -134,39 +149,124 @@ class AttachmentTest(unittest.TestCase):
         self.assertIn("/secure/attachment/2/shot.png", HITS)
         run = pipeline.get(run["id"])
         self.assertTrue(all(a.get("path") for a in run["attachments"]))
+        with self.assertRaises(ValueError):
+            pipeline.executor.fetch_attachments(run["id"], [], None)
 
-    def test_progress_is_reported_and_stop_keeps_the_menu(self):
-        run = pipeline.create("ATT-1", source_dir=str(self.source_dir), auto_attachments=True, use_codegraph=False)
-        pipeline.executor.start(run["id"], "jira", only=False)
+    def test_skip_mode_downloads_the_ai_picks_without_asking(self):
+        run = pipeline.create("ATT-1", source_dir=str(self.source_dir), auto_attachments=True, use_codegraph=False,
+                              use_infographic=False, gate="skip")
+        self.assertTrue(run["inputs"]["continue_on_optional_error"], "Skip mode keeps going past a failed optional step")
+        pipeline.executor.start(run["id"])
+        self.wait()
+        run = pipeline.get(run["id"])
+        errors = {k: v["error"] for k, v in run["steps"].items() if v["error"]}
+        self.assertEqual(errors, {})
+        self.assertNotIn("pending_gate", run)
+        self.assertEqual([Path(f).name for f in run["inputs"]["log_files"]], ["main.log"])
+        self.assertEqual(run["steps"]["log"]["status"], "done")
+        self.assertEqual(run["steps"]["collab"]["status"], "waiting", "only the publish review is left")
+        self.assertTrue(next(a for a in run["attachments"] if a["filename"] == "logs.zip")["analyzed"])
+        self.assertFalse(next(a for a in run["attachments"] if a["filename"] == "shot.png").get("path"),
+                         "a screenshot is never downloaded as log evidence")
+
+    def test_skip_mode_goes_on_without_logs_when_the_download_fails(self):
+        run = pipeline.create("ATT-404", auto_attachments=True, use_infographic=False, gate="skip")
+        pipeline.executor.start(run["id"])
+        self.wait()
+        run = pipeline.get(run["id"])
+        self.assertEqual(run["steps"]["understand"]["status"], "done")
+        self.assertEqual(run["steps"]["log"]["status"], "skipped", run["steps"]["log"]["error"])
+        self.assertEqual(run["steps"]["log"]["error"], "")
+        self.assertEqual(run["steps"]["analyze"]["status"], "done", "the ticket is still analyzed, without log evidence")
+        self.assertEqual(run["steps"]["collab"]["status"], "waiting")
+        log = (pipeline.run_dir(run["id"]) / "run.log").read_text(encoding="utf-8")
+        self.assertIn("gone.zip", log)
+
+    def test_review_gate_reopens_when_the_download_fails(self):
+        run = pipeline.create("ATT-404", auto_attachments=True, use_infographic=False, gate="review")
+        pipeline.executor.start(run["id"])
+        self.wait()
+        self.assertEqual(pipeline.get(run["id"])["steps"]["log"]["status"], "waiting")
+        pipeline.executor.resolve_gate(run["id"], ["gone.zip"])
+        self.wait()
+        run = pipeline.get(run["id"])
+        self.assertEqual(run["steps"]["log"]["status"], "waiting", "the user is asked again instead of losing the run")
+        self.assertIn("gone.zip", run["pending_gate"]["problem"])
+        self.assertEqual(run["steps"]["analyze"]["status"], "idle")
+
+        pipeline.executor.resolve_gate(run["id"], skip_logs=True)  # "continue without logs"
+        self.wait()
+        run = pipeline.get(run["id"])
+        self.assertEqual(run["steps"]["log"]["status"], "skipped")
+        self.assertEqual(run["steps"]["analyze"]["status"], "done")
+
+    def test_manual_gate_asks_the_user_instead_of_the_ai(self):
+        asked = len(self.understand_files)
+        run = pipeline.create("ATT-1", source_dir=str(self.source_dir), auto_attachments=True, use_codegraph=False,
+                              use_infographic=False, gate="manual")
+        pipeline.executor.start(run["id"])
+        self.wait()
+        run = pipeline.get(run["id"])
+        self.assertEqual(run["steps"]["understand"]["status"], "skipped", "Manual: no AI triage")
+        self.assertEqual(len(self.understand_files), asked)
+        self.assertEqual(run["steps"]["log"]["status"], "waiting")
+        self.assertEqual(run["pending_gate"]["mode"], "manual")
+        self.assertEqual(run["pending_gate"]["suggested"], [], "Manual pre-selects nothing")
+        with self.assertRaises(ValueError):
+            pipeline.executor.resolve_gate(run["id"], ["logs.zip"], None, "25:99", "")
+
+        pipeline.executor.resolve_gate(run["id"], ["logs.zip"], None, "12:30:01.250", "12:30:01.350", 0)
+        self.wait()
+        run = pipeline.get(run["id"])
+        self.assertEqual(run["steps"]["log"]["status"], "done", run["steps"]["log"]["error"])
+        self.assertEqual(run["inputs"]["log_shift_minutes"], 0)
+        brief = (pipeline.run_dir(run["id"]) / "03-log-brief.md").read_text(encoding="utf-8")
+        self.assertIn("retry scheduled", brief, "the window typed by the user is the one that is applied")
+        self.assertNotIn("connect failed status=133", brief)
+        self.assertEqual(run["log_stats"]["timeAlignment"]["source"], "manual")
+
+    def test_progress_is_reported_and_stop_returns_to_the_gate(self):
+        run = pipeline.create("ATT-1", source_dir=str(self.source_dir), auto_attachments=True, use_codegraph=False,
+                              gate="review")
+        pipeline.executor.start(run["id"])
         self.wait()
         seen = []
         real = pipeline.attachments.collect
 
         def stopping(issue, items, analyze, folder, log, cancel, progress):
             progress("download", 0, len(items), items[0]["filename"])
-            seen.append((dict(pipeline.get(run["id"])["att_progress"]), pipeline.get(run["id"])["steps"]["jira"]["status"]))
+            seen.append((dict(pipeline.get(run["id"])["att_progress"]), pipeline.get(run["id"])["steps"]["log"]["status"]))
             pipeline.executor.stop()
             return real(issue, items, analyze, folder, log=log, cancel=cancel, progress=progress)
 
         pipeline.attachments.collect = stopping
         try:
-            pipeline.executor.fetch_attachments(run["id"], ["logs.zip", "shot.png"], None)
+            pipeline.executor.resolve_gate(run["id"], ["logs.zip", "shot.png"])
             self.wait()
         finally:
             pipeline.attachments.collect = real
         self.assertEqual(seen[0][0]["total"], 2)
-        self.assertEqual(seen[0][1], "running", "Jira card shows the running download")
+        self.assertEqual(seen[0][1], "running", "the Log card shows the running download")
         run = pipeline.get(run["id"])
         self.assertNotIn("att_progress", run)
-        self.assertEqual(run["steps"]["jira"]["status"], "waiting", "stopped: back to the menu")
-        self.assertIn("pending_attachments", run)
+        self.assertEqual(run["steps"]["log"]["status"], "waiting", "stopped: back to the gate")
+        self.assertIn("pending_gate", run)
         self.assertEqual(run["inputs"]["log_files"], [])
-        self.assertEqual(run["steps"]["understand"]["status"], "idle")
+        self.assertEqual(run["steps"]["analyze"]["status"], "idle")
 
         # the same run can still be completed afterwards
-        pipeline.executor.fetch_attachments(run["id"], ["logs.zip"], None)
+        pipeline.executor.resolve_gate(run["id"], ["logs.zip"])
         self.wait()
         self.assertEqual(pipeline.get(run["id"])["steps"]["log"]["status"], "done")
+
+    def test_download_limit_keeps_the_most_relevant_picks(self):
+        mb = 1024 ** 2
+        run = {"attachments": [{"filename": "a.zip", "size": 60 * mb}, {"filename": "b.7z.001", "size": 30 * mb},
+                               {"filename": "b.7z.002", "size": 30 * mb}, {"filename": "c.log", "size": 5 * mb}]}
+        picks = [{"filename": name} for name in ("a.zip", "b.7z.001", "c.log")]
+        self.assertEqual(pipeline._within_budget(run, picks, 100), (["a.zip", "c.log"], ["b.7z.001"]),
+                         "a split archive counts with all its volumes")
+        self.assertEqual(pipeline._within_budget(run, picks, 0), (["a.zip", "b.7z.001", "c.log"], []), "0 = no limit")
 
     def test_credentials_follow_the_extension_rules(self):
         def auth(env):
@@ -228,15 +328,20 @@ class AttachmentTest(unittest.TestCase):
             attachments.extract(archive, log=lambda m: None, cancel=stop)
         self.assertFalse((folder / "x.zip_extracted").exists())
 
-    def test_skipping_the_menu_resumes_the_run(self):
-        run = pipeline.create("ATT-1", auto_attachments=True)
-        pipeline.executor.start(run["id"], "jira", only=False)
-        self.wait()
-        pipeline.executor.fetch_attachments(run["id"], [], None)
-        self.wait()
+    def test_ticket_without_usable_attachments_is_a_ticket_only_run(self):
+        real = self.__class__.issue_json
+        self.__class__.issue_json = json.dumps({"key": "ATT-1", "summary": "BT fails", "attachments": [
+            {"id": "2", "filename": "shot.png", "size": 4, "url": "http://127.0.0.1:1/shot.png"}]})
+        try:
+            run = pipeline.create("ATT-1", auto_attachments=True, use_infographic=False, gate="review")
+            pipeline.executor.start(run["id"])
+            self.wait()
+        finally:
+            self.__class__.issue_json = real
         run = pipeline.get(run["id"])
-        self.assertEqual(run["steps"]["jira"]["status"], "done")
-        self.assertEqual(run["steps"]["understand"]["status"], "skipped")
+        self.assertEqual([run["steps"][s]["status"] for s in ("understand", "log")], ["skipped"] * 2,
+                         "a screenshot is not log evidence: no AI triage, no gate")
+        self.assertNotIn("pending_gate", run)
         self.assertEqual(run["steps"]["analyze"]["status"], "done")
 
     def test_zip_slip_refused(self):

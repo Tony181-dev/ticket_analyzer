@@ -177,7 +177,11 @@ def _ready(path, workdir, depth, log, cancel):
     path = Path(path)
     if attachments.is_7z_volume_continuation(path.name):
         return []
-    kind, enc = sniff(path)
+    try:
+        kind, enc = sniff(path)
+    except OSError as exc:  # moved or deleted since it was chosen: skip it, keep the other files
+        log(t("log.prep_skip", name=path.name, why=exc.strerror or str(exc)))
+        return []
     if kind == "empty":
         return []
     if kind == "zstd":

@@ -26,8 +26,8 @@ class TimestampContractTest(unittest.TestCase):
         for answer in ("no timestamp", "```json\n[]\n```", '{"time_start":"25:00","time_end":"12:30"}',
                        '{"time_start":123}', '{"keywords":"do not iterate characters"}'):
             focus = parse_focus(answer)
-            self.assertEqual(focus["schema_version"], 1)
-            self.assertEqual(focus["time_basis"], "log-local-clock")
+            self.assertEqual(focus["schema_version"], 2)
+            self.assertEqual(focus["time_basis"], "ticket-clock")
             self.assertEqual(focus["filter_mode"], "full")
             self.assertIsNone(focus["time_start"])
             self.assertIsNone(focus["time_end"])

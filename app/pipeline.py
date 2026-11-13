@@ -19,8 +19,8 @@ from pathlib import Path
 from . import ai, attachments, events, logprep, mcp, paths, settings
 from .evidence import graph as codegraph
 from .i18n import t
-from .evidence import logsleuth
-from .evidence.timestamps import normalize_focus, parse_focus
+from .evidence import logsleuth, timealign
+from .evidence.timestamps import normalize_clock, normalize_focus, normalize_shift, parse_focus
 from .report import collab, infographic, preview, storage
 from .report.refine_pipeline import refine_report
 
@@ -35,16 +35,18 @@ STEPS = [
     {"id": "collab", "title": "Đăng Collab", "sub": "create / update"},
 ]
 ORDER = [s["id"] for s in STEPS]
-CONTINUABLE_ERROR_STEPS = {"understand", "log", "graph"}
+# Steps that only add evidence/decoration: in Skip mode a failure here is recorded and the run goes on.
+CONTINUABLE_ERROR_STEPS = {"understand", "log", "graph", "infographic"}
+GATES = settings.GATES
 
 # (file, label, kind, editable)
 ARTIFACTS = {
     "jira": [("01-jira.md", "Ticket", "md", False), ("01-jira.json", "JSON thô", "json", False),
-             ("01-attachments.json", "Attachments", "json", False)],
+             ("01-attachments.md", "Tệp đính kèm", "md", False), ("01-attachments.json", "Attachments", "json", False)],
     "understand": [("02-understanding.md", "Thời điểm trong ticket", "md", False),
                    ("02-focus.json", "Khung giờ & từ khoá", "json", False)],
-        "log": [("03-log-brief.md", "Log brief", "md", False), ("03-catalog.md", "Catalog log", "md", False),
-            ("03-log-stats.json", "LogSleuth stats", "json", False)],
+    "log": [("03-log-brief.md", "Log brief", "md", False), ("03-log-span.md", "Khoảng giờ & múi giờ log", "md", False),
+            ("03-catalog.md", "Catalog log", "md", False), ("03-log-stats.json", "LogSleuth stats", "json", False)],
     "graph": [("04-brain.html", "Sơ đồ tương tác", "html", False), ("04-GRAPH_REPORT.md", "Report", "md", False),
               ("04-graph.simple.json", "graph.simple.json (AI)", "json", False), ("04-graph.json", "graph.json", "json", False)],
     "analyze": [("05-analysis.md", "Phân tích", "md", True),
@@ -62,37 +64,155 @@ _lock = threading.RLock()
 _runs = {}
 
 
+USAGE_KEYS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens")
+
+
 def _empty_copilot_usage():
     return {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0,
             "cache_read_tokens": 0, "cache_write_tokens": 0, "reasoning_tokens": 0,
             "model_calls": 0, "updated": None}
 
 
+def _count(value):
+    try:
+        return max(0, int(value)) if not isinstance(value, bool) else 0
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
+def _add_usage(target, delta, calls):
+    for key in USAGE_KEYS:
+        target[key] = _count(target.get(key)) + _count(delta.get(key))
+    target["total_tokens"] = target["input_tokens"] + target["output_tokens"]
+    target["model_calls"] = _count(target.get("model_calls")) + calls
+
+
+def _open_pass(run, start, continued=False):
+    """One "lượt chạy": every press of Run adds a record, so re-running a ticket keeps each pass's tokens."""
+    passes = run.setdefault("usage_passes", [])
+    if passes and passes[-1].get("ended") is None:
+        if continued:
+            return passes[-1]
+        if passes[-1].get("model_calls"):  # left open at a gate that was never answered
+            passes[-1]["ended"] = time.time()
+        else:
+            passes.pop()
+    record = {"n": (passes[-1]["n"] + 1 if passes else 1), "started": time.time(), "ended": None, "seconds": 0.0,
+              "from": start, "ai_mode": run.get("ai_mode"), "estimated": False, "by_step": {},
+              **{k: v for k, v in _empty_copilot_usage().items() if k != "updated"}}
+    passes.append(record)
+    del passes[:-50]
+    return record
+
+
+def _close_pass(run, paused=False):
+    passes = run.get("usage_passes") or []
+    if not passes:
+        return
+    record = passes[-1]
+    seconds = 0.0
+    for step in ORDER:
+        state = run["steps"][step]
+        if state.get("started") and state.get("ended") and state["started"] >= record["started"] - 1:
+            seconds += max(0.0, _count_float(state["ended"]) - _count_float(state["started"]))
+    record["seconds"] = round(seconds, 3)
+    if paused:  # waiting at the evidence gate: the same pass continues after the user answers
+        return
+    record["ended"] = time.time()
+    if not record["model_calls"]:  # e.g. only "Publish" was pressed: nothing to account for
+        passes.pop()
+
+
+def _count_float(value):
+    try:
+        return max(0.0, float(value or 0))
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+
+
+def usage_summary(run):
+    """Totals over every pass of this run (measured for Copilot CLI, estimated for M365)."""
+    passes = run.get("usage_passes") or []
+    total = {k: v for k, v in _empty_copilot_usage().items() if k != "updated"}
+    for record in passes:
+        _add_usage(total, record, _count(record.get("model_calls")))
+    total["passes"] = len(passes)
+    total["estimated"] = any(record.get("estimated") for record in passes)
+    return total
+
+
+def _record_usage(run, delta, estimated=False):
+    """Add one AI call's tokens to the current pass (and to the step that made the call)."""
+    if not isinstance(delta, dict):
+        return
+    calls = _count(delta.get("model_calls"))
+    if not calls:
+        return
+    passes = run.get("usage_passes") or []
+    if passes:
+        record = passes[-1]
+        _add_usage(record, delta, calls)
+        record["estimated"] = bool(record.get("estimated") or estimated)
+        step = run.get("current_step")
+        if step:
+            record["by_step"][step] = _count(record["by_step"].get(step)) + _count(delta.get("input_tokens")) + _count(delta.get("output_tokens"))
+
+
 def _record_copilot_usage(run, delta):
+    """Measured Copilot CLI usage: cumulative for the run, plus the current pass."""
     if run.get("ai_mode") != "copilot" or not isinstance(delta, dict):
         return
-    try:
-        calls = max(0, int(delta.get("model_calls", 0)))
-    except (TypeError, ValueError, OverflowError):
-        calls = 0
+    calls = _count(delta.get("model_calls"))
     if not calls:
         return
     usage = run.setdefault("copilot_usage", _empty_copilot_usage())
-    for key in ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens"):
-        try:
-            value = max(0, int(delta.get(key, 0)))
-        except (TypeError, ValueError, OverflowError):
-            value = 0
-        usage[key] = max(0, int(usage.get(key, 0))) + value
-    usage["total_tokens"] = usage["input_tokens"] + usage["output_tokens"]
-    usage["model_calls"] = max(0, int(usage.get("model_calls", 0))) + calls
+    _add_usage(usage, delta, calls)
     usage["updated"] = time.time()
+    _record_usage(run, delta)
     _save(run)
 
 
-def _ask_ai(run, cfg, prompt, files, work_dir, **kwargs):
-    kwargs["on_usage"] = lambda delta: _record_copilot_usage(run, delta)
-    return ai.ask(cfg, prompt, files, work_dir, **kwargs)
+def _estimate_tokens(prompt, files, answer):
+    """M365 reports no usage: a UTF-8 bytes/4 estimate of what was sent and received (the chat's own
+    history and system prompt are not visible to the app, so the real input is somewhat larger)."""
+    sent = len(str(prompt or "").encode("utf-8"))
+    for file in files or []:
+        try:
+            sent += Path(file).stat().st_size
+        except OSError:
+            pass
+    return {"input_tokens": sent // 4, "output_tokens": len(str(answer or "").encode("utf-8")) // 4, "model_calls": 1}
+
+
+_NO_RETRY = ("not signed in", "sign-in", "sign in", "login", "not installed", "cancel", "unauthor", "authenticat")
+
+
+def _retryable(exc):
+    """Timeouts, a crashed browser worker or an empty answer are worth one more try; a missing login is not."""
+    text = str(exc).lower()
+    return not any(marker in text for marker in _NO_RETRY)
+
+
+def _ask_ai(run, cfg, prompt, files, work_dir, retries=None, **kwargs):
+    measured = []
+    kwargs["on_usage"] = lambda delta: (measured.append(1), _record_copilot_usage(run, delta))
+    if retries is None:
+        try:
+            retries = max(0, min(3, int(cfg.get("ai_retries", 1))))
+        except (TypeError, ValueError):
+            retries = 1
+    for attempt in range(retries + 1):
+        try:
+            answer = ai.ask(cfg, prompt, files, work_dir, **kwargs)
+            if not measured:  # M365 (and a Copilot CLI without usage events) reports nothing: estimate
+                _record_usage(run, _estimate_tokens(prompt, files, answer), estimated=True)
+            return answer
+        except Exception as exc:
+            if executor.cancel.is_set() or attempt >= retries or not _retryable(exc):
+                raise
+            _log(run, t("log.ai_retry", n=attempt + 1, total=retries, error=str(exc)[:300]))
+            if executor.cancel.wait(3):
+                raise
 
 
 def _finish_step(state, status, **changes):
@@ -110,6 +230,14 @@ def _finish_step(state, status, **changes):
 
 class Cancelled(Exception):
     pass
+
+
+class Skip(Exception):
+    """Raised by a step that turns out to have nothing to do: recorded as skipped, the run goes on."""
+
+
+class NeedGate(Exception):
+    """Raised by the log step in Review/Manual mode when the user has to supply or confirm evidence."""
 
 
 # ---------------------------------------------------------------------------
@@ -132,6 +260,7 @@ def _artifacts(run_id, step):
 
 def _save(run):
     run["updated"] = time.time()
+    run["usage_total"] = usage_summary(run)
     for step in ORDER:
         run["steps"][step]["artifacts"] = _artifacts(run["id"], step)
     tmp = run_dir(run["id"]) / "run.json.tmp"
@@ -151,6 +280,10 @@ def get(run_id):
             run.setdefault("inputs", {}).setdefault(
                 "use_infographic", any(run_dir(run_id).glob("06-infographic.*")))
             run.setdefault("inputs", {}).setdefault("continue_on_optional_error", False)
+            run["inputs"].setdefault("gate", "review" if run["inputs"].get("auto_attachments") else "skip")
+            run["inputs"].setdefault("log_shift_minutes", None)
+            run.setdefault("gate_state", {})
+            run.pop("pending_attachments", None)  # pre-gate pause: the evidence gate replaces it
             changed = False
             if "auto_publish_to_collab" not in run["inputs"]:
                 run["inputs"]["auto_publish_to_collab"] = not settings.load().get("review_before_publish", True)
@@ -205,9 +338,10 @@ def list_runs(limit=50):
     return items
 
 
-def create(issue, log_files=(), source_dir="", auto_attachments=False, download_dir="", use_codegraph=True,
-           logsleuth_options=None, use_infographic=True, continue_on_optional_error=False,
-           auto_publish_to_collab=None):
+def create(issue, log_files=(), source_dir="", auto_attachments=None, download_dir="", use_codegraph=None,
+           logsleuth_options=None, use_infographic=None, continue_on_optional_error=None,
+           auto_publish_to_collab=None, gate=None, log_shift_minutes=None):
+    """New run. Options left as None take the "defaults for a new ticket" from Settings."""
     key = issue_key(issue)
     if not key:
         raise ValueError(t("err.issue"))
@@ -218,6 +352,17 @@ def create(issue, log_files=(), source_dir="", auto_attachments=False, download_
     if source_dir and not Path(source_dir).is_dir():
         raise ValueError(t("err.src_missing", path=source_dir))
     cfg = settings.load()
+    gate = cfg["default_gate"] if gate is None else gate
+    if gate not in GATES:
+        raise ValueError(t("err.gate"))
+    if auto_attachments is None:
+        auto_attachments = cfg["default_use_attachments"]
+    if use_codegraph is None:
+        use_codegraph = cfg["default_use_codegraph"]
+    if use_infographic is None:
+        use_infographic = cfg["default_use_infographic"]
+    if continue_on_optional_error is None:  # Skip mode = keep going without the step that failed
+        continue_on_optional_error = gate == "skip"
     if auto_publish_to_collab is None:
         auto_publish_to_collab = not cfg.get("review_before_publish", True)
     log_options = logsleuth.normalize_options(logsleuth_options, cfg["log_budget_tokens"])
@@ -226,15 +371,18 @@ def create(issue, log_files=(), source_dir="", auto_attachments=False, download_
         selected_catalog = {"path": log_options["catalog_path"], "source_path": log_options["catalog_path"],
                             **logsleuth.catalog_info(log_options["catalog_path"])}
     run_id = f"{key}-{datetime.now():%Y%m%d-%H%M%S}"
+    while run_dir(run_id).exists():  # two runs of one ticket created within the same second
+        run_id += "x"
     run_dir(run_id).mkdir(parents=True, exist_ok=True)
     run = {
         "id": run_id, "issue": key, "summary": "", "created": time.time(), "updated": time.time(),
         "inputs": {"log_files": files, "source_dir": str(source_dir or ""), "auto_attachments": bool(auto_attachments),
+                   "gate": gate, "log_shift_minutes": normalize_shift(log_shift_minutes),
                    "download_dir": str(download_dir or ""), "use_codegraph": bool(use_codegraph),
                    "use_infographic": bool(use_infographic),
                    "continue_on_optional_error": bool(continue_on_optional_error),
                    "auto_publish_to_collab": bool(auto_publish_to_collab), "logsleuth": log_options},
-        "attachments": [],
+        "attachments": [], "gate_state": {},
         "session_id": str(uuid.uuid4()), "focus": {}, "collab": {}, "ai_mode": cfg["ai_mode"],
         "copilot_usage": _empty_copilot_usage(),
         "steps": {s: {"status": "idle", "note": "", "error": "", "started": None, "ended": None,
@@ -262,31 +410,58 @@ def clear_runs(keep=None):
 
 def update_inputs(run_id, log_files=None, source_dir=None, auto_attachments=None, download_dir=None, use_codegraph=None,
                   logsleuth_options=None, use_infographic=None, continue_on_optional_error=None,
-                  auto_publish_to_collab=None):
+                  auto_publish_to_collab=None, gate=None, log_shift_minutes=...):
     run = get(run_id)
     if not run:
         raise ValueError("Run not found")
     if executor.busy and executor.run_id == run_id:
         raise RuntimeError(t("err.busy"))
+    # Validate everything first so a bad value never leaves the run half-updated.
+    if gate is not None and gate not in GATES:
+        raise ValueError(t("err.gate"))
+    if log_files is not None:
+        log_files = [str(f) for f in log_files if f and str(f).strip()]
+        for f in log_files:
+            if not Path(f).is_file():
+                raise ValueError(t("err.log_missing", path=f))
+    if source_dir is not None:
+        source_dir = str(source_dir).strip()
+        if source_dir and not Path(source_dir).is_dir():
+            raise ValueError(t("err.src_missing", path=source_dir))
+    if log_shift_minutes is not ...:
+        log_shift_minutes = normalize_shift(log_shift_minutes)
+    inputs = run["inputs"]
     if logsleuth_options is not None:
-        options = logsleuth.normalize_options({**run["inputs"].get("logsleuth", {}), **logsleuth_options},
+        options = logsleuth.normalize_options({**inputs.get("logsleuth", {}), **logsleuth_options},
                                              settings.load()["log_budget_tokens"])
-        previous_catalog = run["inputs"].get("logsleuth", {}).get("catalog_path")
+        previous_catalog = inputs.get("logsleuth", {}).get("catalog_path")
         if options["catalog_path"] and options["catalog_path"] != previous_catalog:
             info = logsleuth.catalog_info(options["catalog_path"])
             run["log_catalog"] = {"path": options["catalog_path"], "source_path": options["catalog_path"], **info}
-        run["inputs"]["logsleuth"] = options
+        inputs["logsleuth"] = options
         _mark_stale(run, "log")
-    if auto_attachments is not None:
-        run["inputs"]["auto_attachments"] = bool(auto_attachments)
+    if gate is not None and gate != inputs.get("gate"):
+        inputs["gate"] = gate
+        if continue_on_optional_error is None:
+            continue_on_optional_error = gate == "skip"
+        run.setdefault("gate_state", {}).pop("resolved", None)
+        run.pop("pending_gate", None)
+        if run["steps"]["log"]["status"] == "waiting":
+            run["steps"]["log"].update(status="stale", note="")
+        _refresh_skipped(run)
+    if auto_attachments is not None and bool(auto_attachments) != bool(inputs.get("auto_attachments")):
+        inputs["auto_attachments"] = bool(auto_attachments)
+        run.setdefault("gate_state", {}).pop("skip_logs", None)
+        _refresh_skipped(run)
+        _mark_stale(run, "log")
     if download_dir is not None:
-        run["inputs"]["download_dir"] = str(download_dir)
-    if use_codegraph is not None and bool(use_codegraph) != run["inputs"].get("use_codegraph", True):
-        run["inputs"]["use_codegraph"] = bool(use_codegraph)
+        inputs["download_dir"] = str(download_dir)
+    if use_codegraph is not None and bool(use_codegraph) != inputs.get("use_codegraph", True):
+        inputs["use_codegraph"] = bool(use_codegraph)
         _mark_stale(run, "graph")
-    if use_infographic is not None and bool(use_infographic) != run["inputs"].get("use_infographic", True):
+    if use_infographic is not None and bool(use_infographic) != inputs.get("use_infographic", True):
         enabled = bool(use_infographic)
-        run["inputs"]["use_infographic"] = enabled
+        inputs["use_infographic"] = enabled
         _mark_stale(run, "infographic")
         state = run["steps"]["infographic"]
         if enabled:
@@ -294,19 +469,22 @@ def update_inputs(run_id, log_files=None, source_dir=None, auto_attachments=None
         else:
             state.update(status="skipped", note=t("note.skip_infographic_disabled"), error="")
     if continue_on_optional_error is not None:
-        run["inputs"]["continue_on_optional_error"] = bool(continue_on_optional_error)
+        inputs["continue_on_optional_error"] = bool(continue_on_optional_error)
     if auto_publish_to_collab is not None:
-        run["inputs"]["auto_publish_to_collab"] = bool(auto_publish_to_collab)
+        inputs["auto_publish_to_collab"] = bool(auto_publish_to_collab)
+    if log_shift_minutes is not ... and log_shift_minutes != inputs.get("log_shift_minutes"):
+        inputs["log_shift_minutes"] = log_shift_minutes
+        _mark_stale(run, "log")
     if log_files is not None:
-        run["inputs"]["log_files"] = [f for f in log_files if f]
-        if run["inputs"]["log_files"] and run["steps"]["understand"]["status"] == "skipped":
-            run["steps"]["understand"].update(status="idle", note="", error="")
+        inputs["log_files"] = log_files
+        run.setdefault("gate_state", {}).pop("skip_logs", None)
+        _refresh_skipped(run)
         _mark_stale(run, "log")
     if source_dir is not None:
-        run["inputs"]["source_dir"] = source_dir
+        inputs["source_dir"] = source_dir
         run.pop("log_catalog", None)
-        if "logsleuth" in run["inputs"]:
-            run["inputs"]["logsleuth"]["catalog_path"] = ""
+        if "logsleuth" in inputs:
+            inputs["logsleuth"]["catalog_path"] = ""
         _mark_stale(run, "log")
     _save(run)
     return run
@@ -322,6 +500,25 @@ def _mark_stale(run, from_step):
                 state.update(status="idle", note="", error="")
             else:
                 state["note"] = t(_skip_reason(run, step))
+
+
+def _refresh_skipped(run):
+    """A skipped step that an input change made runnable becomes idle again."""
+    for step in ORDER:
+        state = run["steps"][step]
+        if state["status"] == "skipped" and APPLICABLE[step](run):
+            state.update(status="idle", note="", error="")
+
+
+def resume_step(run):
+    """Where "Continue" picks up: the first step still to do. An optional step that failed but was
+    passed over (later steps finished) is not retried here - that is what its own Retry button is for."""
+    statuses = [run["steps"][step]["status"] for step in ORDER]
+    progressed = max((i for i, status in enumerate(statuses) if status in ("done", "waiting")), default=-1)
+    for i, status in enumerate(statuses):
+        if status in ("idle", "stale", "waiting") or (status == "error" and i > progressed):
+            return ORDER[i]
+    return None
 
 
 def read_file(run_id, name):
@@ -342,6 +539,7 @@ def write_file(run_id, name, text):
     if name == "02-focus.json":
         run["focus"] = _clean_focus(json.loads(text))
         text = json.dumps(run["focus"], ensure_ascii=False, indent=2)
+        run.setdefault("gate_state", {})["focus_confirmed"] = True  # a window typed by the user is used as is
     (run_dir(run_id) / name).write_text(text, encoding="utf-8")
     _mark_stale(run, DOWNSTREAM_OF_FILE.get(name, "format"))
     _log(run, t("log.saved", name=name))
@@ -362,24 +560,36 @@ class Executor:
     def busy(self):
         return bool(self.thread and self.thread.is_alive())
 
-    def start(self, run_id, start=None, only=False, publish=False, catalog_only=False):
+    def start(self, run_id, start=None, only=False, publish=False, catalog_only=False, until=None, resume=False):
+        """Run the pipeline: from `start` (default: step 1), a single step (`only`), up to `until`,
+        or from wherever the run stopped (`resume`)."""
         if self.busy:
             raise RuntimeError(t("err.busy"))
-        if not get(run_id):
+        run = get(run_id)
+        if not run:
             raise ValueError("Run not found")
-        if start and start not in ORDER:
-            raise ValueError(f"Unknown pipeline step: {start}")
+        for step in (start, until):
+            if step and step not in ORDER:
+                raise ValueError(f"Unknown pipeline step: {step}")
+        if resume:
+            start = resume_step(run)
+            if until and (start is None or ORDER.index(start) > ORDER.index(until)):
+                start = until
+            if start is None:
+                raise ValueError(t("err.nothing_to_resume"))
+        if start and until and ORDER.index(until) < ORDER.index(start):
+            raise ValueError(t("err.until_before_start"))
         self.cancel.clear()
         ai.reset()
         self.run_id = run_id
-        self.thread = threading.Thread(target=self._run, args=(run_id, start, only, publish, catalog_only), daemon=True)
+        self.thread = threading.Thread(target=self._run, args=(run_id, start, only, publish, catalog_only, until), daemon=True)
         self.thread.start()
 
     def stop(self):
         self.cancel.set()
         ai.cancel()
 
-    def _run(self, run_id, start, only, publish, catalog_only=False):
+    def _run(self, run_id, start, only, publish, catalog_only=False, until=None, after_gate=False):
         run = get(run_id)
         cfg = settings.load()
         mode_changed = (run.get("ai_mode") != cfg["ai_mode"]
@@ -397,28 +607,41 @@ class Executor:
                     and APPLICABLE[prerequisite](run)):
                 first = index
                 break
-        if run.pop("pending_attachments", None) and run["steps"]["jira"]["status"] == "waiting":
-            run["steps"]["jira"].update(status="done", note=_jira_note(run))
+        if first == 0 and not after_gate:
+            run["gate_state"] = {}  # a pass from step 1 decides the evidence again
+        run.pop("pending_gate", None)
         if first < requested_first:
             _log(run, t("log.rewind_stale", step=STEP_TITLE[ORDER[first]], requested=STEP_TITLE[requested_step]))
         _mark_stale(run, ORDER[first])
+        _open_pass(run, ORDER[first], continued=after_gate)
         events.publish("busy", run_id=run_id, busy=True)
+        paused = False
+
+        def last(step):  # this step ends the requested range
+            return (only and step == requested_step) or step == until
+
         try:
             for step in ORDER[first:]:
                 if self.cancel.is_set():
                     break
                 state = run["steps"][step]
+                run["current_step"] = step
                 if not APPLICABLE[step](run) and not (catalog_only and step == "log"):
                     state.update(status="skipped", note=t(_skip_reason(run, step)), error="")
                     _save(run)
-                    if only and step == requested_step:
+                    if last(step):
                         break
                     continue
-                if (step == "log" and run["inputs"].get("logsleuth", {}).get("mode") == "manual"
-                        and start != "log"):
-                    state.update(status="waiting", note=t("note.log_manual"), error="")
-                    _save(run)
-                    break
+                if step == "log" and not catalog_only:
+                    if _gate_pending(run):
+                        _open_gate(run)
+                        paused = True
+                        break
+                    if (run["inputs"].get("logsleuth", {}).get("mode") == "manual"
+                            and (start != "log" or after_gate)):
+                        state.update(status="waiting", note=t("note.log_manual"), error="")
+                        _save(run)
+                        break
                 if (step == "collab" and not run["inputs"].get("auto_publish_to_collab", False)
                     and not publish and not (only and start == "collab")):
                     state.update(status="waiting", note=t("note.review"), error="")
@@ -438,6 +661,19 @@ class Executor:
                     _finish_step(state, "idle", note=t("note.stopped"))
                     _save(run)
                     break
+                except Skip as skipped:
+                    _finish_step(state, "skipped", note=str(skipped))
+                    _log(run, "– " + t("step." + step) + f": {skipped}")
+                    _save(run)
+                    if last(step):
+                        break
+                    continue
+                except NeedGate as need:
+                    _finish_step(state, "waiting")
+                    _log(run, "⏸ " + t("step." + step) + f": {need}")
+                    _open_gate(run, str(need))
+                    paused = True
+                    break
                 except Exception as exc:  # surface every failure on the step card
                     if self.cancel.is_set():
                         _finish_step(state, "idle", note=t("note.stopped"))
@@ -446,23 +682,20 @@ class Executor:
                         _log(run, "✗ " + t("step." + step) + f": {exc}")
                         _log(run, traceback.format_exc(), quiet=True)
                     _save(run)
-                    if (not self.cancel.is_set() and not only and step in CONTINUABLE_ERROR_STEPS
+                    if (not self.cancel.is_set() and not last(step) and step in CONTINUABLE_ERROR_STEPS
                             and run["inputs"].get("continue_on_optional_error")):
                         _log(run, t("log.continue_optional_error", step=t("step." + step)))
                         continue
                     break
                 _finish_step(state, "done", note=note or "")
                 _log(run, "✓ " + t("step." + step) + (f" — {note}" if note else ""))
-                if step == "jira" and run["inputs"].get("auto_attachments") and run.get("attachments"):
-                    # Let the user pick which attachments to download; the run resumes at step 2 afterwards.
-                    run["pending_attachments"] = {"resume": not only, "publish": publish}
-                    state.update(status="waiting", note=note + " · " + t("note.pick_att"))
-                    _save(run)
-                    break
                 _save(run)
-                if only and step == requested_step:
+                if last(step):
                     break
         finally:
+            run.pop("current_step", None)
+            _close_pass(run, paused)
+            _save(run)
             events.publish("busy", run_id=run_id, busy=False)
 
     def check(self):
@@ -470,62 +703,100 @@ class Executor:
             raise Cancelled()
 
     def fetch_attachments(self, run_id, names, folder=None):
-        """Download the chosen attachments (log/archive ones are extracted and analyzed).
+        """Download the chosen attachments now (Jira card menu); log/archive ones are extracted and their
+        logs join the log inputs. The pipeline is not started."""
+        run = self._idle_run(run_id)
+        known = {a["filename"] for a in run.get("attachments") or []}
+        names = {n for n in names or [] if n in known}
+        if not names:
+            raise ValueError(t("err.att_none"))
+        if folder is not None:
+            run["inputs"]["download_dir"] = str(folder).strip()
+        self._download(run, names, "jira")
 
-        While the run waits for this choice, continue the pipeline at step 2 afterwards (empty `names` = skip).
-        """
+    def resolve_gate(self, run_id, names=(), folder=None, time_start=None, time_end=None, shift_minutes=...,
+                     skip_logs=False):
+        """The user's answer at the evidence gate (Review / Manual): which attachments to download, the
+        incident window and the log clock shift - or "go on without logs". The pipeline then continues."""
+        run = self._idle_run(run_id)
+        clocks = []
+        for value in (time_start, time_end):
+            clock = normalize_clock(value) if isinstance(value, str) and value.strip() else None
+            if isinstance(value, str) and value.strip() and clock is None:
+                raise ValueError(t("err.time_format"))
+            clocks.append(clock)
+        shift = ... if shift_minutes is ... else normalize_shift(shift_minutes)
+        known = {a["filename"] for a in run.get("attachments") or []}
+        names = set() if skip_logs else {n for n in names or [] if n in known}
+        if folder is not None:
+            run["inputs"]["download_dir"] = str(folder).strip()
+        run["focus"] = _clean_focus({**(run.get("focus") or {}), "time_start": clocks[0], "time_end": clocks[1]})
+        _write(run, "02-focus.json", json.dumps(run["focus"], ensure_ascii=False, indent=2))
+        if shift is not ...:
+            run["inputs"]["log_shift_minutes"] = shift
+        run.setdefault("gate_state", {}).update(resolved=True, focus_confirmed=True, skip_logs=bool(skip_logs))
+        run.pop("pending_gate", None)
+        run["steps"]["log"].update(status="idle", note="", error="")
+        _log(run, t("log.gate_skip") if skip_logs else t("log.gate_ok", n=len(names)))
+        _save(run)
+        self._download(run, names, "log", resume=True)
+
+    def _idle_run(self, run_id):
         if self.busy:
             raise RuntimeError(t("err.busy"))
         run = get(run_id)
         if not run:
             raise ValueError("Run not found")
-        pending = run.get("pending_attachments")
-        if not names and not pending:
-            raise ValueError(t("err.att_none"))
-        if folder is not None:
-            run["inputs"]["download_dir"] = str(folder).strip()
+        return run
+
+    def _download(self, run, names, step, resume=False):
+        """Background job: fetch `names` with progress on `step`; with `resume`, continue the pipeline at
+        the log step afterwards, or reopen the gate when the download fails or is stopped."""
+        run_id = run["id"]
         self.cancel.clear()
+        ai.reset()
         self.run_id = run_id
-        names = set(names)
-        selected_names = names
-        names = attachments.expand_7z_volumes(names, (a["filename"] for a in run.get("attachments") or []))
-        added_volumes = sum(1 for name in names - selected_names if attachments.is_7z_volume(name))
-        analyze = {a["filename"] for a in run.get("attachments") or [] if a["filename"] in names and a["kind"] != "other"}
+        available = [a["filename"] for a in run.get("attachments") or []]
+        selected = set(names)
+        names = attachments.expand_7z_volumes(selected, available)
+        added_volumes = sum(1 for name in names - selected if attachments.is_7z_volume(name))
+        analyze = {a["filename"] for a in run.get("attachments") or [] if a["filename"] in names and _analyzable(a)}
         if names:  # visible at once, before the worker thread has fetched anything
             run["att_progress"] = {"phase": "download", "done": 0, "total": len(names), "name": ""}
             _save(run)
 
         def job():
             events.publish("busy", run_id=run_id, busy=True)
-            jira = run["steps"]["jira"]
-            before = {k: jira[k] for k in ("status", "note")}
-            resume = False
+            state = run["steps"][step]
+            before = {k: state[k] for k in ("status", "note", "error")}
+            ok = False
             try:
                 if added_volumes:
-                    _log(run, t("log.att_split_volumes", selected=len(selected_names), added=added_volumes, total=len(names)))
-                added = _fetch_attachments(run, names, analyze, self.check)
-                if pending:
-                    run.pop("pending_attachments", None)
-                    jira.update(status="done", note=_jira_note(run, added if names else None))
-                    resume = pending.get("resume", True)
-                else:
-                    jira.update(before, note=_jira_note(run, added) if names else before["note"])
+                    _log(run, t("log.att_split_volumes", selected=len(selected), added=added_volumes, total=len(names)))
+                added = _fetch_attachments(run, names, analyze, self.check, step) if names else 0
+                state.update(before)
+                if step == "jira":
+                    state["note"] = _jira_note(run, added)
                     if added:
-                        if run["steps"]["understand"]["status"] == "skipped":
-                            run["steps"]["understand"].update(status="idle", note="", error="")
+                        run.setdefault("gate_state", {}).pop("skip_logs", None)
+                        _refresh_skipped(run)
                         _mark_stale(run, "log")
-                _save(run)
-                if resume:
-                    self._run(run_id, "understand", False, pending.get("publish", False))
+                ok = True
             except Cancelled:
-                jira.update(before)
+                state.update(before)
                 _log(run, t("note.stopped"))
+                if resume:
+                    _open_gate(run)
             except Exception as exc:
-                jira.update(before)
+                state.update(before)
                 _log(run, f"✗ {exc}")
+                if resume:
+                    _open_gate(run, t("err.att_download", error=exc))
             finally:
                 run.pop("att_progress", None)
                 _save(run)
+                if ok and resume:
+                    self._run(run_id, "log", False, False, after_gate=True)
                 events.publish("busy", run_id=run_id, busy=False)
         self.thread = threading.Thread(target=job, daemon=True)
         self.thread.start()
@@ -599,7 +870,42 @@ def step_jira(run, cfg, ex):
     run["attachments"] = [{**a, **{k: known[a["filename"]][k] for k in ("path", "analyzed") if k in known.get(a["filename"], {})}}
                           for a in found]
     _write(run, "01-attachments.json", json.dumps(run["attachments"], ensure_ascii=False, indent=2))
+    listing = _attachment_listing(run, cfg)
+    if listing:
+        _write(run, "01-attachments.md", listing)
+    else:
+        _path(run, "01-attachments.md").unlink(missing_ok=True)
     return _jira_note(run)
+
+
+def _size(n):
+    n = int(n or 0)
+    return f"{n / 1048576:.1f} MB" if n >= 1048576 else f"{max(1, n // 1024)} KB" if n else "?"
+
+
+def _analyzable(attachment):
+    """Could hold log text: anything except obvious media / documents / binaries."""
+    return (attachment.get("kind") != "other"
+            or Path(str(attachment.get("filename", "")).lower()).suffix not in attachments.SKIP_EXT)
+
+
+def _log_candidates(run):
+    return [a for a in run.get("attachments") or [] if _analyzable(a)]
+
+
+def _attachment_listing(run, cfg):
+    """Markdown table of the ticket's attachments: what the AI chooses from (and what the user sees)."""
+    items = run.get("attachments") or []
+    if not items:
+        return ""
+    cap = int(cfg.get("auto_download_max_mb") or 0)
+    lines = [f"# Attachments of {run['issue']}", "",
+             f"Download limit for automatic selection: {f'{cap} MB in total' if cap else 'none'}.", "",
+             "| filename | size | uploaded | type |", "|---|---:|---|---|"]
+    for a in items:
+        kind = a["kind"] if _analyzable(a) else "media/document (not a log)"
+        lines.append(f"| {a['filename']} | {_size(a.get('size'))} | {a.get('created') or '?'} | {kind} |")
+    return "\n".join(lines) + "\n"
 
 
 def _jira_note(run, added=None):
@@ -616,19 +922,22 @@ def attachment_folder(run):
     return Path(custom) / run["issue"] if custom else attachments.default_folder(run["issue"])
 
 
-def _fetch_attachments(run, names, analyze, cancel):
-    """Download the named attachments; logs from `analyze` ones join the log inputs. Returns #log files added."""
+def _fetch_attachments(run, names, analyze, cancel, step="jira"):
+    """Download the named attachments; logs from `analyze` ones join the log inputs. Returns #log files added.
+
+    Progress is shown on `step`: the Jira card for a manual download, the Log card when the files are
+    fetched as evidence (evidence gate / Skip mode)."""
     items = [a for a in run.get("attachments") or [] if a["filename"] in names]
     if not items:
         return 0
     folder = attachment_folder(run)
     _log(run, t("log.att_download", n=len(items), folder=folder))
-    jira = run["steps"]["jira"]
-    jira.update(status="running", error="")
+    state = run["steps"][step]
+    state.update(status="running", error="")
 
     def progress(phase, done, total, name, pct=None):
         run["att_progress"] = {"phase": phase, "done": done, "total": total, "name": name, "pct": pct}
-        jira["note"] = t("note.att_" + phase, done=done, total=total, name=name)
+        state["note"] = t("note.att_" + phase, done=done, total=total, name=name)
         _save(run)
 
     try:
@@ -647,6 +956,90 @@ def _fetch_attachments(run, names, analyze, cancel):
     _log(run, t("log.att_added", n=len(added)))
     _save(run)
     return len(added)
+
+
+# ---------------------------------------------------------------------------
+# evidence gate: which attachments, which time window
+# ---------------------------------------------------------------------------
+def _attachment_picks(run):
+    """(picks, source): the attachments to fetch as log evidence - the AI's choice when step 2 made one,
+    otherwise every log/archive attachment, newest first."""
+    candidates = {a["filename"].casefold(): a for a in _log_candidates(run)}
+    chosen = (run.get("focus") or {}).get("attachments") if _done(run, "understand") else None
+    if chosen is not None:
+        picks = [{"filename": candidates[c["filename"].casefold()]["filename"], "reason": c.get("reason", "")}
+                 for c in chosen if c["filename"].casefold() in candidates]
+        return picks, "ai"
+    ordered = sorted((a for a in candidates.values() if a["kind"] in ("log", "archive")
+                      and not attachments.is_7z_volume_continuation(a["filename"])),
+                     key=lambda a: str(a.get("created") or ""), reverse=True)
+    return [{"filename": a["filename"], "reason": ""} for a in ordered], "heuristic"
+
+
+def _within_budget(run, picks, cap_mb):
+    """Skip mode: the picks that fit the download limit, in order (a split archive counts with all its parts)."""
+    available = [a["filename"] for a in run.get("attachments") or []]
+    size = {a["filename"]: int(a.get("size") or 0) for a in run.get("attachments") or []}
+    left = int(cap_mb) * 1024 ** 2 if cap_mb else None
+    chosen, dropped = [], []
+    for pick in picks:
+        need = sum(size.get(n, 0) for n in attachments.expand_7z_volumes({pick["filename"]}, available))
+        if left is not None and need > left:
+            dropped.append(pick["filename"])
+            continue
+        if left is not None:
+            left -= need
+        chosen.append(pick["filename"])
+    return chosen, dropped
+
+
+def _gate_pending(run):
+    return (run["inputs"].get("gate") in ("review", "manual")
+            and not (run.get("gate_state") or {}).get("resolved"))
+
+
+def _open_gate(run, problem=""):
+    """Pause at the log step until the user confirms the evidence (POST /api/runs/<id>/gate)."""
+    picks, source = _attachment_picks(run) if run["inputs"].get("auto_attachments") else ([], "none")
+    mode = run["inputs"].get("gate") if run["inputs"].get("gate") in ("review", "manual") else "review"
+    if mode == "manual" and source == "heuristic":
+        picks = []  # Manual: nothing is pre-selected by the app
+    run["pending_gate"] = {"mode": mode, "problem": problem, "source": source,
+                           "suggested": [pick["filename"] for pick in picks],
+                           "reasons": {pick["filename"]: pick["reason"] for pick in picks if pick["reason"]}}
+    run.setdefault("gate_state", {}).pop("resolved", None)
+    run["steps"]["log"].update(status="waiting", note=problem or t("note.gate_" + mode), error="")
+    _save(run)
+
+
+def _acquire_logs(run, cfg, ex):
+    """Skip mode: download the chosen attachments by itself. A failed download is logged, never fatal -
+    the run simply continues with whatever evidence it has."""
+    if not run["inputs"].get("auto_attachments") or not _log_candidates(run):
+        return
+    picks, source = _attachment_picks(run)
+    if not picks:
+        _log(run, t("log.att_none_picked"))
+        return
+    cap = cfg.get("auto_download_max_mb") or 0
+    names, dropped = _within_budget(run, picks, cap)
+    for name in dropped:
+        _log(run, t("log.att_over_cap", name=name, mb=cap))
+    done = {a["filename"] for a in run.get("attachments") or [] if a.get("analyzed")}
+    names = [name for name in names if name not in done]
+    if not names:
+        return
+    _log(run, t("log.att_auto_" + source, names=", ".join(names)))
+    wanted = attachments.expand_7z_volumes(set(names), [a["filename"] for a in run["attachments"]])
+    try:
+        _fetch_attachments(run, wanted, wanted, ex.check, "log")
+    except Cancelled:
+        raise
+    except Exception as exc:
+        ex.check()
+        _log(run, "⚠ " + t("log.att_failed", error=exc))
+    finally:
+        run["steps"]["log"]["note"] = ""
 
 
 def _find_summary(data):
@@ -680,20 +1073,39 @@ def _unreadable(run, sources):
 
 def step_understand(run, cfg, ex):
     ex.check()
-    answer = _ask_ai(run, cfg, (f"Jira issue {run['issue']}. Read only the attached Jira ticket and follow "
-                          "understand.md to extract an explicitly stated incident time. Do not inspect logs or source code."),
-                    [_path(run, "01-jira.md"), _instruction("understand.md")],
-                    run_dir(run["id"]), session_id=run["session_id"])
+    if not _path(run, "01-jira.md").exists():
+        raise RuntimeError(t("err.need_jira"))
+    listing = _path(run, "01-attachments.md")
+    choose = bool(run["inputs"].get("auto_attachments") and _log_candidates(run) and listing.exists())
+    files = [_path(run, "01-jira.md")] + ([listing] if choose else []) + [_instruction("understand.md")]
+    task = ("extract the explicitly stated incident time and its time zone"
+            + (", and choose which attachments from 01-attachments.md are worth downloading as log evidence" if choose else ""))
+    answer = _ask_ai(run, cfg, (f"Jira issue {run['issue']}. Read only the attached Jira ticket"
+                                + (" and the attachment list" if choose else "") + f" and follow understand.md to {task}. "
+                                "Do not inspect logs or source code."),
+                     files, run_dir(run["id"]), session_id=run["session_id"])
     ex.check()
     answer = storage.strip_chat_wrappers(answer)
     _write(run, "02-understanding.md", answer)
     focus = _parse_focus(answer)
+    if not choose:
+        focus["attachments"] = None
     run["focus"] = focus
     _write(run, "02-focus.json", json.dumps(focus, ensure_ascii=False, indent=2))
+    gate_state = run.setdefault("gate_state", {})
+    gate_state.pop("focus_confirmed", None)  # a fresh AI reading replaces a window typed earlier
+    gate_state.pop("resolved", None)
+    notes = []
     if focus.get("time_start") or focus.get("time_end"):
-        return t("note.window", start=focus.get("time_start") or "…", end=focus.get("time_end") or "…",
-                 confidence=focus.get("confidence") or "?")
-    return t("note.nowindow")
+        notes.append(t("note.window", start=focus.get("time_start") or "…", end=focus.get("time_end") or "…",
+                       confidence=focus.get("confidence") or "?")
+                     + (f" {focus['ticket_utc_offset']}" if focus.get("ticket_utc_offset") else ""))
+    else:
+        notes.append(t("note.nowindow"))
+    if choose and focus.get("attachments") is not None:
+        offered = {a["filename"].casefold() for a in _log_candidates(run)}
+        notes.append(t("note.picks", n=sum(1 for pick in focus["attachments"] if pick["filename"].casefold() in offered)))
+    return " · ".join(notes)
 
 
 def _parse_focus(answer):
@@ -724,8 +1136,65 @@ def _use_log_catalog(run, catalog, ex):
     return target
 
 
+def _align_window(run, cfg, ex, files, focus):
+    """Turn the ticket's incident window into the clock the logs print (see app/evidence/timealign.py)."""
+    try:
+        spans = logsleuth.span(files, cancel=ex.check)
+    except Cancelled:
+        raise
+    except Exception as exc:  # the alignment is a refinement: without spans the window is used as written
+        ex.check()
+        _log(run, f"log span: {exc}", quiet=True)
+        spans = []
+    try:
+        jira_offset = timealign.jira_utc_offset(_path(run, "01-jira.json").read_text(encoding="utf-8"))
+    except OSError:
+        jira_offset = None
+    report = _path(run, "03-log-span.md")
+
+    def ask(options):
+        report.write_text(timealign.report(focus, spans, run.get("attachments"), jira_offset, options), encoding="utf-8")
+        answer = _ask_ai(run, cfg, (f"Jira issue {run['issue']}. Follow log-time.md with the attached 03-log-span.md "
+                                    "to decide which clock the log files print relative to the ticket's incident time. "
+                                    "Return only the JSON block described in log-time.md."),
+                         [report, _path(run, "01-jira.md"), _instruction("log-time.md")], run_dir(run["id"]),
+                         session_id=run["session_id"], retries=0)
+        ex.check()
+        blocks = re.findall(r"```json\s*\n?([\s\S]*?)```", answer, flags=re.I)
+        data = json.loads(blocks[-1] if blocks else answer)
+        return data if isinstance(data, dict) else {}
+
+    use_ai = run["inputs"].get("gate") != "manual"
+    result = timealign.align(focus, spans, jira_offset, run["inputs"].get("log_shift_minutes"), ask if use_ai else None)
+    chosen = (f"\n## Applied\n\n- Shift: **{result['shift_minutes']} min** ({result['source']})\n"
+              f"- Window in log clock: `{result['time_start'] or '…'}` → `{result['time_end'] or '…'}`\n"
+              f"- Why: {result['reason']}\n")
+    report.write_text(timealign.report(focus, spans, run.get("attachments"), jira_offset, result["candidates"]) + chosen,
+                      encoding="utf-8")
+    _log(run, t("log.align", shift=_shift_text(result["shift_minutes"]), start=result["time_start"] or "…",
+               end=result["time_end"] or "…", why=t("align." + result["source"])))
+    return result
+
+
+def _shift_text(minutes):
+    hours = minutes / 60
+    return ("+" if minutes > 0 else "") + (f"{hours:.0f}" if minutes % 60 == 0 else f"{hours:.2f}".rstrip("0")) + "h"
+
+
 def step_log(run, cfg, ex):
-    files = _ready_logs(run, ex)
+    interactive = run["inputs"].get("gate") in ("review", "manual")
+    if not interactive:
+        _acquire_logs(run, cfg, ex)
+    if not run["inputs"]["log_files"]:
+        if interactive:
+            raise NeedGate(t("err.no_logs_available"))
+        raise Skip(t("note.skip_no_logs_found"))
+    try:
+        files = _ready_logs(run, ex)
+    except RuntimeError as exc:
+        if interactive:
+            raise NeedGate(str(exc))
+        raise
     source = run["inputs"]["source_dir"]
     options = _log_options(run, cfg["log_budget_tokens"])
     manual = options["mode"] == "manual"
@@ -745,17 +1214,25 @@ def step_log(run, cfg, ex):
         _log(run, t("log.no_catalog"))
     ex.check()
     try:
-        if not _done(run, "understand"):
+        if not (_done(run, "understand") or (run.get("gate_state") or {}).get("focus_confirmed")):
             raise FileNotFoundError("Step 2 did not complete")
         focus = _clean_focus(json.loads(_path(run, "02-focus.json").read_text(encoding="utf-8")))
     except (OSError, ValueError):
         focus = _clean_focus(None)
+    alignment = None
     if manual:
+        _path(run, "03-log-span.md").unlink(missing_ok=True)
         focus = _clean_focus({"time_start": options["time_start"] if options["time_enabled"] else None,
                               "time_end": options["time_end"] if options["time_enabled"] else None})
     elif focus["filter_mode"] == "full":
-        # No timestamp contract: match ALL catalog services over the full logs.
-        focus["keywords"] = []
+        _path(run, "03-log-span.md").unlink(missing_ok=True)
+        if catalog:
+            # No timestamp contract: match ALL catalog services over the full logs. Without a
+            # catalog the ticket keywords are the only ticket-specific seed, so they are kept.
+            focus["keywords"] = []
+    else:
+        alignment = _align_window(run, cfg, ex, files, focus)
+        focus = {**focus, "time_start": alignment["time_start"], "time_end": alignment["time_end"]}
     out = _path(run, "03-log-brief.md")
     stats = logsleuth.slice_logs(files, out, catalog, focus, cfg["log_budget_tokens"], options, cancel=ex.check)
     _unreadable(run, stats.get("sources") or [])
@@ -767,7 +1244,7 @@ def step_log(run, cfg, ex):
                                     cfg["log_budget_tokens"], options, cancel=ex.check)
         window = None
         fallback = True
-    stats.update(mode=options["mode"], requestedFocus=focus, fullTimeFallback=fallback)
+    stats.update(mode=options["mode"], requestedFocus=focus, fullTimeFallback=fallback, timeAlignment=alignment)
     run["log_stats"] = stats
     _write(run, "03-log-stats.json", json.dumps(stats, ensure_ascii=False, indent=2))
     note = t("note.log", total=stats["totalLines"], kept=stats["kept"], tokens=stats["tokens"])
@@ -775,13 +1252,52 @@ def step_log(run, cfg, ex):
         note += " · " + t("note.log_no_catalog")
     if window:
         note += f", {window['start']}–{window['end']}"
+        if alignment and alignment["shift_minutes"]:
+            note += " (" + t("note.log_shift", shift=_shift_text(alignment["shift_minutes"])) + ")"
+    elif fallback:
+        note += " · " + t("note.log_full_fallback")
     return note
 
 
+_STOPWORDS = {"with", "when", "from", "that", "this", "after", "before", "does", "cannot", "into", "have", "been",
+              "issue", "error", "fail", "fails", "failed", "failure", "problem", "ticket", "không", "khong", "được",
+              "while", "then", "there", "their", "should", "would", "could", "about", "still", "sometimes"}
+
+
+def _graph_focus(run):
+    """What this ticket is about, for ordering the AI's view of the code graph: ticket keywords and
+    the source files LogSleuth matched in the log."""
+    focus = run.get("focus") or {}
+    terms = [*(focus.get("keywords") or []), *(focus.get("services") or [])]
+    terms += [w for w in re.findall(r"[A-Za-z_][A-Za-z0-9_]{3,}", run.get("summary") or "") if w.lower() not in _STOPWORDS]
+    files = []
+    if _done(run, "log"):
+        try:
+            brief = _path(run, "03-log-brief.md").read_text(encoding="utf-8")
+            files = sorted({m.replace("\\", "/") for m in re.findall(r"`([^`\s]+\.\w+):\d+`", brief)})
+        except OSError:
+            pass
+    seen, unique = set(), []
+    for term in terms:
+        key = term.strip().lower()
+        if len(key) >= 3 and key not in seen:
+            seen.add(key)
+            unique.append(term.strip())
+    return {"terms": unique[:40], "files": files[:60]}
+
+
 def step_graph(run, cfg, ex):
-    out, meta = codegraph.build(run["inputs"]["source_dir"], cfg["graph_token_budget"])
+    out, meta = codegraph.build(run["inputs"]["source_dir"], cfg["graph_token_budget"], cancel=ex.check)
     codegraph.copy_into(out, run_dir(run["id"]))
-    return t("note.graph", files=meta.get("files", 0), nodes=meta.get("nodes", 0), edges=meta.get("edges", 0))
+    if not meta.get("nodes"):
+        raise Skip(t("note.graph_empty"))
+    note = t("note.graph", files=meta.get("files", 0), nodes=meta.get("nodes", 0), edges=meta.get("edges", 0))
+    focus = _graph_focus(run)
+    if focus["terms"] or focus["files"]:
+        matched = codegraph.write_focused(out, _path(run, "04-graph.simple.json"), cfg["graph_token_budget"], focus)
+        if matched:
+            note += " · " + t("note.graph_focus", n=matched)
+    return note
 
 
 def _source_code_evidence(run, max_refs=12, context_lines=8):
@@ -930,6 +1446,52 @@ def _preview_page(storage_xhtml, key):
             + preview.to_html(storage_xhtml) + "</main></body></html>")
 
 
+_INFOGRAPHIC_JSON_PROMPT = (
+    "Read 05-analysis.md and return exactly one JSON object, no Markdown or code fence, "
+    "with these keys: title (string), summary (string), root_cause (string), timeline (array of objects "
+    "with time and event strings), evidence (array of strings), actions (array of strings). Use the same "
+    "language as the analysis. Use only supported facts; do not invent missing times or causes. Keep each "
+    "list to at most four concise items; use empty arrays when the analysis has no such details.")
+
+
+def _vector_infographic(run, cfg, ex, analysis):
+    """Text-only route: the AI returns the facts as JSON and the app draws the SVG itself."""
+    raw = _ask_ai(run, cfg, f"Jira issue {run['issue']}. " + _INFOGRAPHIC_JSON_PROMPT,
+                  [analysis], run_dir(run["id"]), session_id=run["session_id"], context="long_context")
+    ex.check()
+    summary = infographic.parse_ai_summary(raw)
+    target = _path(run, "06-infographic.svg")
+    target.write_text(infographic.render_svg(summary, run["issue"]), encoding="utf-8")
+    return target
+
+
+def _generated_image(run, cfg, ex, analysis, staging):
+    """M365 image generation; raises when the model returns no usable image (quota, refusal, timeout)."""
+    images = ai.ask_image(cfg, (
+        f"Jira issue {run['issue']}. Using the analysis in this conversation (also attached as 05-analysis.md), "
+        "create ONE landscape infographic image that summarises the ticket: problem, key timeline, root cause, "
+        "supporting evidence and recommended actions. Write the text in the same language as the analysis. "
+        "Generate the image itself; do not reply with text only."),
+        [analysis], staging, session_id=run["session_id"])
+    ex.check()
+    source = Path(images[0]) if images else None
+    if not source or not source.is_file():
+        raise RuntimeError(t("err.no_image"))
+    with source.open("rb") as image_file:
+        header = image_file.read(12)
+    if header.startswith(b"\x89PNG\r\n\x1a\n"):
+        suffix = ".png"
+    elif header.startswith(b"\xff\xd8"):
+        suffix = ".jpg"
+    elif header[:4] == b"RIFF" and header[8:12] == b"WEBP":
+        suffix = ".webp"
+    else:
+        raise RuntimeError(t("err.no_image"))
+    target = _path(run, "06-infographic" + suffix)
+    shutil.copyfile(source, target)
+    return target
+
+
 def step_infographic(run, cfg, ex):
     analysis = _path(run, "05-analysis.md")
     if not analysis.exists():
@@ -938,48 +1500,26 @@ def step_infographic(run, cfg, ex):
         old.unlink()
     staging = _path(run, "06-infographic")
     shutil.rmtree(staging, ignore_errors=True)
+    fallback = ""
     try:
         if cfg.get("ai_mode") == "copilot":
-            raw = _ask_ai(run, cfg, (
-                f"Jira issue {run['issue']}. Read 05-analysis.md and return exactly one JSON object, no Markdown or code fence, "
-                "with these keys: title (string), summary (string), root_cause (string), timeline (array of objects "
-                "with time and event strings), evidence (array of strings), actions (array of strings). Use the same "
-                "language as the analysis. Use only supported facts; do not invent missing times or causes. Keep each "
-                "list to at most four concise items; use empty arrays when the analysis has no such details."),
-                [analysis], run_dir(run["id"]), session_id=run["session_id"], context="long_context")
-            ex.check()
-            summary = infographic.parse_ai_summary(raw)
-            target = _path(run, "06-infographic.svg")
-            target.write_text(infographic.render_svg(summary, run["issue"]), encoding="utf-8")
+            target = _vector_infographic(run, cfg, ex, analysis)
         else:
-            images = ai.ask_image(cfg, (
-                f"Jira issue {run['issue']}. Using the analysis in this conversation (also attached as 05-analysis.md), "
-                "create ONE landscape infographic image that summarises the ticket: problem, key timeline, root cause, "
-                "supporting evidence and recommended actions. Write the text in the same language as the analysis. "
-                "Generate the image itself; do not reply with text only."),
-                [analysis], staging, session_id=run["session_id"])
-            ex.check()
-            if not images:
-                raise RuntimeError(t("err.no_image"))
-            source = Path(images[0])
-            if not source.is_file():
-                raise RuntimeError(t("err.no_image"))
-            with source.open("rb") as image_file:
-                header = image_file.read(12)
-            if header.startswith(b"\x89PNG\r\n\x1a\n"):
-                suffix = ".png"
-            elif header.startswith(b"\xff\xd8"):
-                suffix = ".jpg"
-            elif header[:4] == b"RIFF" and header[8:12] == b"WEBP":
-                suffix = ".webp"
-            else:
-                raise RuntimeError(t("err.no_image"))
-            target = _path(run, "06-infographic" + suffix)
-            shutil.copyfile(source, target)
+            try:
+                target = _generated_image(run, cfg, ex, analysis, staging)
+            except Cancelled:
+                raise
+            except Exception as exc:
+                # M365 image generation fails now and then (daily image quota, refusals, timeouts).
+                # The same facts drawn locally are better than no infographic at all.
+                ex.check()
+                _log(run, "⚠ " + t("log.infographic_fallback", error=str(exc)[:300]))
+                target = _vector_infographic(run, cfg, ex, analysis)
+                fallback = " · " + t("note.infographic_fallback")
     finally:
         shutil.rmtree(staging, ignore_errors=True)
     run["infographic_mode"] = cfg.get("ai_mode")
-    return t("note.infographic", name=target.name, kb=target.stat().st_size // 1024)
+    return t("note.infographic", name=target.name, kb=max(1, target.stat().st_size // 1024)) + fallback
 
 
 def _infographic(run):
@@ -997,53 +1537,62 @@ def step_collab(run, cfg, ex):
     title = f"{run['issue']} - {run.get('summary') or 'Ticket analysis'}"[:240]
     parent = (cfg.get("collab_parent_id") or "").strip()
     log = lambda m: _log(run, m)
-    use_infographic = bool(run.get("inputs", {}).get("use_infographic", False))
-    image = _infographic(run) if use_infographic else None
-    image_note = ""
-    if use_infographic:
-        if (not image or not image.is_file() or run["steps"]["infographic"]["status"] != "done"):
-            raise RuntimeError(t("err.infographic_required"))
+    wanted = bool(run.get("inputs", {}).get("use_infographic", False))
+    # The report is the deliverable; the infographic decorates it. A missing or unattachable image
+    # never blocks publishing - the note says so and the step can be re-run once the image exists.
+    image = _infographic(run) if wanted and run["steps"]["infographic"]["status"] == "done" else None
+    if image is not None and not image.is_file():
+        image = None
+    attached = False
+    if image:
         body = report + collab.image_block(image.name)
         existing_id = collab.find_existing(space, title, parent)
         if existing_id:
-            if not collab.attach_image(existing_id, image, log=log):
-                raise RuntimeError(t("err.infographic_attach"))
-            result = collab.publish(space, title, body, parent, log=log)
+            attached = collab.attach_image(existing_id, image, log=log)
+            result = collab.publish(space, title, body if attached else report, parent, log=log)
             result["page_id"] = result.get("page_id") or existing_id
         else:
-            initial = collab.publish(space, title, report, parent, log=log)
-            page_id = initial.get("page_id") or collab.find_existing(space, title, parent)
-            if not page_id:
-                raise RuntimeError(t("err.infographic_attach"))
-            try:
-                if not collab.attach_image(page_id, image, log=log):
-                    raise RuntimeError(t("err.infographic_attach"))
-                result = collab.publish(space, title, body, parent, log=log)
-            except Exception:
-                if initial.get("action") == "created":
-                    collab.delete_page(page_id, log=log)
-                raise
-            result["action"] = initial.get("action", result.get("action"))
-            result["page_id"] = result.get("page_id") or page_id
-            result["url"] = result.get("url") or initial.get("url", "")
-        image_note = " + " + t("note.with_image")
+            result = collab.publish(space, title, report, parent, log=log)
+            page_id = result.get("page_id") or collab.find_existing(space, title, parent)
+            attached = bool(page_id) and collab.attach_image(page_id, image, log=log)
+            if attached:
+                second = collab.publish(space, title, body, parent, log=log)
+                result = {**second, "action": result.get("action", second.get("action")),
+                          "page_id": second.get("page_id") or page_id, "url": second.get("url") or result.get("url", "")}
     else:
         result = collab.publish(space, title, report, parent, log=log)
+    if attached:
+        image_note = " + " + t("note.with_image")
+    elif image:
+        image_note = " · " + t("note.image_failed")
+    elif wanted:
+        image_note = " · " + t("note.no_image")
+        log("⚠ " + t("note.no_image"))
+    else:
+        image_note = ""
     url = result.get("url") or ""
     if not url and result.get("page_id"):
         base = mcp.status()["collab"]["url"].rstrip("/")
         url = f"{base}/pages/viewpage.action?pageId={result['page_id']}"
-    run["collab"] = {"action": result["action"], "page_id": result.get("page_id"), "url": url, "title": title}
+    run["collab"] = {"action": result["action"], "page_id": result.get("page_id"), "url": url, "title": title,
+                     "infographic": attached}
     _write(run, "07-collab.json", json.dumps({**run["collab"], "result": result.get("result")}, ensure_ascii=False, indent=2, default=str))
     return (t("note.created") if result["action"] == "created" else t("note.updated")) + (f" {result.get('page_id')}" if result.get("page_id") else "") + image_note
 
 
 RUNNERS = {"jira": step_jira, "understand": step_understand, "log": step_log, "graph": step_graph,
            "analyze": step_analyze, "format": step_format, "infographic": step_infographic, "collab": step_collab}
+def _wants_logs(run):
+    """Log evidence is expected: files were chosen, or the ticket has attachments that may hold logs."""
+    inputs = run["inputs"]
+    return bool(inputs["log_files"]) or (bool(inputs.get("auto_attachments")) and bool(_log_candidates(run)))
+
+
 APPLICABLE = {
     "jira": lambda r: True,
-    "understand": lambda r: bool(r["inputs"]["log_files"]),
-    "log": lambda r: bool(r["inputs"]["log_files"]),
+    # Manual gate: the user types the time window, so the AI triage is not asked.
+    "understand": lambda r: r["inputs"].get("gate") != "manual" and _wants_logs(r),
+    "log": lambda r: _wants_logs(r) and not (r.get("gate_state") or {}).get("skip_logs"),
     "graph": lambda r: bool(r["inputs"].get("source_dir")) and bool(r["inputs"].get("use_codegraph", True)),
     "analyze": lambda r: True, "format": lambda r: True, "collab": lambda r: True,
     "infographic": lambda r: bool(r["inputs"].get("use_infographic", True)),
@@ -1053,11 +1602,17 @@ SKIP_REASON = {"understand": "note.skip_nolog", "log": "note.skip_nolog", "graph
 
 
 def _skip_reason(run, step):
-    if step == "log" and run["inputs"].get("log_files") and not run["inputs"].get("source_dir"):
-        return "note.skip_nocatalog"
+    inputs = run["inputs"]
+    if step in ("understand", "log"):
+        if step == "log" and (run.get("gate_state") or {}).get("skip_logs"):
+            return "note.skip_logs_user"
+        if step == "understand" and inputs.get("gate") == "manual" and _wants_logs(run):
+            return "note.skip_manual_gate"
+        if inputs.get("auto_attachments") and not inputs["log_files"] and run["steps"]["jira"]["status"] == "done":
+            return "note.skip_no_attached_logs"
     if step == "graph":
-        if not run["inputs"].get("use_codegraph", True):
+        if not inputs.get("use_codegraph", True):
             return "note.skip_graph_disabled"
-        if not run["inputs"].get("source_dir"):
+        if not inputs.get("source_dir"):
             return "note.skip_nosrc"
     return SKIP_REASON[step]

@@ -1,12 +1,18 @@
 import ast, os, re
-EXT={'.py','.pyi','.c','.cc','.cpp','.cxx','.h','.hh','.hpp','.hxx','.md','.txt','.rst'}
-SKIP={'.git','.vscode','.codegraph','node_modules','build','dist','out','__pycache__','.venv','venv'}
+from . import langs
+EXT={'.py','.pyi','.c','.cc','.cpp','.cxx','.h','.hh','.hpp','.hxx','.md','.txt','.rst'}|langs.EXT
+SKIP={'.git','.vscode','.codegraph','node_modules','build','dist','out','__pycache__','.venv','venv','target','.gradle'}
+MAX_BYTES=1500000  # generated/minified/huge files add noise and can stall the regex parsers
 def sources(root):
   for base,dirs,files in os.walk(root):
-    dirs[:]=[d for d in dirs if d not in SKIP and not d.startswith('.')]
-    for f in files:
+    dirs[:]=sorted(d for d in dirs if d not in SKIP and not d.startswith('.'))
+    for f in sorted(files):
       p=os.path.join(base,f)
-      if os.path.splitext(f)[1].lower() in EXT: yield p
+      if os.path.splitext(f)[1].lower() not in EXT: continue
+      try:
+        if os.path.getsize(p)>MAX_BYTES: continue
+      except OSError: continue
+      yield p
 
 def _pysig(n):
   a=n.args; parts=[x.arg for x in a.posonlyargs]+[x.arg for x in a.args]
@@ -110,5 +116,8 @@ def parse(root,path):
   file_node={'id':rel,'name':os.path.basename(rel),'kind':'doc' if ext in {'.md','.txt','.rst'} else 'file','file':rel,'line':1,'signature':rel}
   if ext in {'.py','.pyi'}: n,e=pyparse(rel,text)
   elif ext in {'.c','.cc','.cpp','.cxx','.h','.hh','.hpp','.hxx'}: n,e=cppparse(rel,text)
+  elif ext in langs.EXT:
+    # minified bundles are one enormous line: structure cannot be read from them
+    n,e=([],[]) if len(text)>20000 and len(text)>200*(text.count(chr(10))+1) else langs.parse(rel,text,ext)
   else: n,e=[],[]
   return file_node,n,e

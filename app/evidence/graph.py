@@ -19,10 +19,13 @@ def cache_dir(source_dir):
     return paths.GRAPHS / f"{Path(source_dir).name}-{key}"
 
 
-def build(source_dir, token_budget=150000, max_nodes=2500, force=False):
+PARSER_VERSION = 2  # bump when the parsers learn new languages, so cached graphs are rebuilt
+
+
+def build(source_dir, token_budget=150000, max_nodes=2500, force=False, cancel=None):
     out = cache_dir(source_dir)
     manifest = out / ".cache.json"
-    fingerprint = source_fingerprint(source_dir)
+    fingerprint = f"v{PARSER_VERSION}:" + source_fingerprint(source_dir, cancel)
     cached = {}
     cache_hit = False
     if not force and all((out / name).exists() for name in OUTPUTS):
@@ -42,7 +45,7 @@ def build(source_dir, token_budget=150000, max_nodes=2500, force=False):
         _write_manifest(manifest, fingerprint, max_nodes)
         return out, cg.meta
     out.mkdir(parents=True, exist_ok=True)
-    cg = CodeGraph(str(source_dir)).build()
+    cg = CodeGraph(str(source_dir)).build(cancel)
     cg.save(out / "graph.json")
     write_report(cg, out / "GRAPH_REPORT.md")
     write_brain(cg, out / "brain.html", max_nodes)
@@ -60,6 +63,13 @@ def _write_manifest(path, fingerprint, max_nodes):
 def copy_into(out, run_dir):
     for name in OUTPUTS:
         shutil.copyfile(out / name, Path(run_dir) / f"04-{name}")
+
+
+def write_focused(out, target, token_budget, focus):
+    """Per-run AI view of the cached graph, ordered by relevance to the ticket; returns #matched nodes."""
+    cg = CodeGraph.load(Path(out) / "graph.json")
+    data = cg.save_simple(target, token_budget, focus=focus)
+    return (data["meta"].get("focus") or {}).get("matched_nodes", 0)
 
 
 def query(graph_json, question, limit=20):

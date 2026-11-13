@@ -108,16 +108,22 @@ function span(q) {
       const one = readOne(file, 'auto');
       let first = null;
       let last = null;
+      let firstTs = '';
+      let lastTs = '';
+      let wraps = 0;
       for (const r of one.records) {
         const c = clockOf(r.ts);
         if (c === null) continue;
-        if (first === null) first = c;
+        if (first === null) { first = c; firstTs = r.ts; }
+        // The clock going back by more than an hour means midnight (or a reboot) was crossed,
+        // so a time-of-day range no longer describes what this file covers.
+        else if (c + 3600000 < last) wraps++;
         last = c;
+        lastTs = r.ts;
       }
       return {
         file, name: path.basename(file), format: one.format, lines: one.records.length,
-        first: fmtClock(first), last: fmtClock(last),
-        firstTs: (one.records.find((r) => r.ts) || {}).ts || '',
+        first: fmtClock(first), last: fmtClock(last), firstTs, lastTs, wraps,
       };
     }),
   };

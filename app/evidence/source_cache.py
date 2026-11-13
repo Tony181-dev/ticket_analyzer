@@ -13,15 +13,17 @@ _SOURCE_EXTENSIONS = {
     ".dart", ".cs", ".rb", ".php", ".sh", ".bash", ".md", ".txt", ".rst",
 }
 _EXCLUDED_DIRS = {
-    "node_modules", "build", "dist", "out", "__pycache__", "venv",
+    "node_modules", "build", "dist", "out", "__pycache__", "venv", "target",
 }
 
 
-def source_fingerprint(source_dir):
+def source_fingerprint(source_dir, cancel=None):
     """Return a stable SHA-256 digest of tracked source-file metadata."""
     root = Path(source_dir).resolve()
     digest = hashlib.sha256()
     for base, dirs, files in os.walk(root):
+        if cancel:
+            cancel()  # a huge tree on a network share takes a while to walk
         dirs[:] = sorted(
             (name for name in dirs if not name.startswith(".") and name not in _EXCLUDED_DIRS),
             key=str.casefold,

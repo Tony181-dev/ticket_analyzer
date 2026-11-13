@@ -173,12 +173,13 @@ class PipelineTest(unittest.TestCase):
         run = pipeline.get(run["id"])
         self.assertEqual(run["steps"]["collab"]["status"], "done", run["steps"]["collab"]["error"])
         self.assertEqual(run["collab"]["action"], "created")
+        created_id = run["collab"]["page_id"]
         self.assertIn('ri:filename="06-infographic.svg"', self.world.page_bodies[run["collab"]["title"]])
         pipeline.executor.start(run["id"], "collab", only=True, publish=True)
         self.wait()
         run = pipeline.get(run["id"])
         self.assertEqual(run["collab"]["action"], "updated")
-        self.assertEqual(run["collab"]["page_id"], "555")
+        self.assertEqual(run["collab"]["page_id"], created_id, "the existing page is updated, not duplicated")
 
         # editing the analysis marks format + collab stale
         pipeline.write_file(run["id"], "05-analysis.md", "# Edited")
@@ -408,7 +409,7 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(run["steps"]["collab"]["status"], "done")
         self.assertIn('ri:filename="06-infographic.svg"', self.world.page_bodies[run["collab"]["title"]])
 
-    def test_infographic_failure_blocks_collab(self):
+    def test_infographic_failure_does_not_block_publishing_in_skip_mode(self):
         settings.save({"ai_mode": "copilot", "review_before_publish": False})
         self.world.fail_infographic = True
         try:
@@ -419,10 +420,42 @@ class PipelineTest(unittest.TestCase):
             self.world.fail_infographic = False
         run = pipeline.get(run["id"])
         self.assertEqual(run["steps"]["infographic"]["status"], "error")
-        self.assertEqual(run["steps"]["collab"]["status"], "idle")
-        self.assertNotIn(f"{run['issue']} - BT connect fails", self.world.pages)
+        self.assertEqual(run["steps"]["collab"]["status"], "done", "the report is published; the image is optional")
+        self.assertFalse(run["collab"]["infographic"])
+        body = self.world.page_bodies[f"{run['issue']} - BT connect fails"]
+        self.assertNotIn("06-infographic", body)
 
-    def test_infographic_attachment_failure_rolls_back_new_page(self):
+        # once the image exists, publishing again adds it to the same page
+        pipeline.executor.start(run["id"], "infographic")
+        self.wait()
+        run = pipeline.get(run["id"])
+        self.assertEqual(run["steps"]["infographic"]["status"], "done", run["steps"]["infographic"]["error"])
+        self.assertEqual(run["collab"]["action"], "updated")
+        self.assertTrue(run["collab"]["infographic"])
+        self.assertIn('ri:filename="06-infographic.svg"', self.world.page_bodies[run["collab"]["title"]])
+
+    def test_infographic_failure_stops_for_a_decision_outside_skip_mode(self):
+        settings.save({"ai_mode": "copilot", "review_before_publish": False})
+        self.world.fail_infographic = True
+        try:
+            run = pipeline.create("INFOFAIL-2", gate="review")
+            self.assertFalse(run["inputs"]["continue_on_optional_error"])
+            pipeline.executor.start(run["id"])
+            self.wait()
+        finally:
+            self.world.fail_infographic = False
+        run = pipeline.get(run["id"])
+        self.assertEqual(run["steps"]["infographic"]["status"], "error")
+        self.assertEqual(run["steps"]["collab"]["status"], "idle")
+        self.assertEqual(pipeline.resume_step(run), "infographic", "Continue retries the step that stopped the run")
+
+        pipeline.executor.start(run["id"], "collab", publish=True)  # the user's choice: publish without it
+        self.wait()
+        run = pipeline.get(run["id"])
+        self.assertEqual(run["steps"]["collab"]["status"], "done", run["steps"]["collab"]["error"])
+        self.assertIn("infographic", run["steps"]["collab"]["note"])
+
+    def test_infographic_upload_failure_publishes_the_report_without_the_image(self):
         settings.save({"ai_mode": "copilot", "review_before_publish": False})
         self.world.fail_upload = True
         try:
@@ -434,9 +467,183 @@ class PipelineTest(unittest.TestCase):
             self.world.fail_upload = False
         run = pipeline.get(run["id"])
         self.assertEqual(run["steps"]["infographic"]["status"], "done")
-        self.assertEqual(run["steps"]["collab"]["status"], "error")
-        self.assertEqual(run["collab"], {})
-        self.assertNotIn(f"{run['issue']} - BT connect fails", self.world.pages)
+        self.assertEqual(run["steps"]["collab"]["status"], "done", run["steps"]["collab"]["error"])
+        self.assertFalse(run["collab"]["infographic"])
+        self.assertNotIn("06-infographic", self.world.page_bodies[run["collab"]["title"]],
+                         "a page must never reference an image that was not uploaded")
+
+    def test_m365_image_failure_falls_back_to_the_local_svg(self):
+        settings.save({"ai_mode": "m365", "review_before_publish": True})
+
+        def no_image(cfg, prompt, files, image_dir, session_id=None):
+            raise RuntimeError("image generation limit reached")
+        original = pipeline.ai.ask_image
+        pipeline.ai.ask_image = no_image
+        try:
+            run = pipeline.create("INFOFALLBACK-1")
+            pipeline.executor.start(run["id"])
+            self.wait()
+        finally:
+            pipeline.ai.ask_image = original
+            settings.save({"ai_mode": "copilot"})
+        run = pipeline.get(run["id"])
+        self.assertEqual(run["steps"]["infographic"]["status"], "done", run["steps"]["infographic"]["error"])
+        self.assertIn("SVG", run["steps"]["infographic"]["note"])
+        self.assertTrue((pipeline.run_dir(run["id"]) / "06-infographic.svg").exists())
+        self.assertIn("image generation limit reached", (pipeline.run_dir(run["id"]) / "run.log").read_text(encoding="utf-8"))
+
+    def test_resume_and_until_run_exactly_the_requested_range(self):
+        settings.save({"ai_mode": "copilot", "review_before_publish": True})
+        run = pipeline.create("RANGE-1", [str(self.work / "app.log")], str(self.work / "src"), use_infographic=False)
+        pipeline.executor.start(run["id"], until="analyze")
+        self.wait()
+        run = pipeline.get(run["id"])
+        self.assertEqual(run["steps"]["analyze"]["status"], "done")
+        self.assertEqual(run["steps"]["format"]["status"], "idle", "nothing after the requested last step runs")
+        self.assertEqual(pipeline.resume_step(run), "format")
+
+        calls = len(self.world.prompts)
+        pipeline.executor.start(run["id"], resume=True)
+        self.wait()
+        run = pipeline.get(run["id"])
+        self.assertEqual(run["steps"]["format"]["status"], "done")
+        self.assertEqual(run["steps"]["collab"]["status"], "waiting")
+        self.assertEqual(len(self.world.prompts), calls + 1, "Continue does not redo the finished steps")
+        self.assertEqual(pipeline.resume_step(run), "collab")
+        with self.assertRaises(ValueError):
+            pipeline.executor.start(run["id"], "format", until="jira")
+
+    def test_each_pass_keeps_its_own_token_record(self):
+        settings.save({"ai_mode": "copilot", "review_before_publish": True})
+        run = pipeline.create("PASSES-1", use_infographic=False)
+        pipeline.executor.start(run["id"])
+        self.wait()
+        run = pipeline.get(run["id"])
+        self.assertEqual(len(run["usage_passes"]), 1)
+        first = run["usage_passes"][0]
+        self.assertEqual((first["n"], first["from"], first["model_calls"]), (1, "jira", 2))
+        self.assertTrue(first["estimated"], "no usage events from the backend: the tokens are an estimate")
+        self.assertGreater(first["total_tokens"], 0)
+        self.assertEqual(set(first["by_step"]), {"analyze", "format"})
+        self.assertIsNotNone(first["ended"])
+
+        pipeline.executor.start(run["id"], "analyze")  # running again adds a pass instead of overwriting
+        self.wait()
+        run = pipeline.get(run["id"])
+        self.assertEqual([record["n"] for record in run["usage_passes"]], [1, 2])
+        self.assertEqual(run["usage_passes"][1]["from"], "analyze")
+        total = run["usage_total"]
+        self.assertEqual(total["passes"], 2)
+        self.assertEqual(total["total_tokens"], sum(record["total_tokens"] for record in run["usage_passes"]))
+        self.assertEqual(total["model_calls"], 4)
+
+        pipeline.executor.start(run["id"], "collab", only=True, publish=True)  # no AI call: not a token pass
+        self.wait()
+        self.assertEqual(len(pipeline.get(run["id"])["usage_passes"]), 2)
+
+    def test_ticket_time_in_a_stated_zone_is_shifted_to_a_utc_log(self):
+        utc_log = self.work / "utc.log"
+        utc_log.write_text(
+            "10-10 05:20:00.000  1000  1001 I BluetoothService: boot\n"
+            "10-10 05:30:01.200  1000  1001 E BluetoothService: connect failed status=133\n"
+            "10-10 05:45:00.000  1000  1001 E AudioRouter: crash in mixer\n", encoding="utf-8")
+        original_ask = pipeline.ai.ask
+
+        def kst_ask(cfg, prompt, files, run_dir, session_id=None, small=False, effort=None, context=None, on_usage=None):
+            names = [Path(f).name for f in files]
+            if "understand.md" in names:
+                return ('The ticket says 14:30 KST.\n```json\n{"time_start": "14:29:00", "time_end": "14:31:00", '
+                        '"ticket_utc_offset": "+09:00", "incident_date": "2024-10-10", "confidence": "high", '
+                        '"reason": "14:30 KST", "keywords": ["status=133"]}\n```')
+            return self.world.ask(cfg, prompt, files, run_dir, session_id=session_id, small=small,
+                                  effort=effort, context=context, on_usage=on_usage)
+
+        pipeline.ai.ask = kst_ask
+        try:
+            run = pipeline.create("TZ-1", [str(utc_log)], str(self.work / "src"), use_codegraph=False, use_infographic=False)
+            pipeline.executor.start(run["id"], until="log")
+            self.wait()
+        finally:
+            pipeline.ai.ask = original_ask
+        run = pipeline.get(run["id"])
+        self.assertEqual(run["steps"]["log"]["status"], "done", run["steps"]["log"]["error"])
+        self.assertEqual(run["focus"]["ticket_utc_offset"], "+09:00")
+        alignment = run["log_stats"]["timeAlignment"]
+        self.assertEqual((alignment["shift_minutes"], alignment["source"]), (-540, "log-utc"))
+        self.assertEqual((alignment["time_start"], alignment["time_end"]), ("05:29:00", "05:31:00"))
+        self.assertFalse(run["log_stats"]["fullTimeFallback"])
+        brief = (pipeline.run_dir(run["id"]) / "03-log-brief.md").read_text(encoding="utf-8")
+        self.assertIn("status=133", brief)
+        self.assertNotIn("crash in mixer", brief, "the shifted window still filters")
+        self.assertIn("-9h", run["steps"]["log"]["note"])
+        self.assertIn("| -540 |", (pipeline.run_dir(run["id"]) / "03-log-span.md").read_text(encoding="utf-8"))
+
+        # a shift typed by the user wins over the detection and re-slices
+        pipeline.update_inputs(run["id"], log_shift_minutes=-525)
+        self.assertEqual(pipeline.get(run["id"])["steps"]["log"]["status"], "stale")
+        pipeline.executor.start(run["id"], "log", only=True)
+        self.wait()
+        run = pipeline.get(run["id"])
+        self.assertEqual(run["log_stats"]["timeAlignment"]["source"], "manual")
+        self.assertEqual(run["log_stats"]["timeAlignment"]["time_start"], "05:44:00")
+        self.assertEqual(run["log_stats"]["timeWindow"]["start"], "05:44:00")
+        self.assertEqual(run["log_stats"]["afterTime"], 1, "only the 05:45 line is inside the hand-set window")
+        with self.assertRaises(ValueError):
+            pipeline.update_inputs(run["id"], log_shift_minutes=99999)
+
+    def test_ticket_keywords_seed_the_brief_when_there_is_no_source_and_no_time(self):
+        quiet_log = self.work / "quiet.log"
+        quiet_log.write_text(
+            "10-10 12:20:00.000  1000  1001 I BluetoothService: boot\n"
+            "10-10 12:30:01.200  1000  1001 I BluetoothService: link dropped reason=0x13\n", encoding="utf-8")
+        original_ask = pipeline.ai.ask
+
+        def keyword_ask(cfg, prompt, files, run_dir, session_id=None, small=False, effort=None, context=None, on_usage=None):
+            names = [Path(f).name for f in files]
+            if "understand.md" in names:
+                return '```json\n{"time_start": null, "time_end": null, "keywords": ["reason=0x13"]}\n```'
+            return self.world.ask(cfg, prompt, files, run_dir, session_id=session_id, small=small,
+                                  effort=effort, context=context, on_usage=on_usage)
+
+        pipeline.ai.ask = keyword_ask
+        try:
+            run = pipeline.create("KEYWORDS-1", [str(quiet_log)], use_infographic=False)
+            pipeline.executor.start(run["id"], until="log")
+            self.wait()
+        finally:
+            pipeline.ai.ask = original_ask
+        run = pipeline.get(run["id"])
+        self.assertEqual(run["steps"]["log"]["status"], "done", run["steps"]["log"]["error"])
+        self.assertIn("reason=0x13", (pipeline.run_dir(run["id"]) / "03-log-brief.md").read_text(encoding="utf-8"),
+                      "without a source catalog the ticket keywords are the only ticket-specific seed")
+
+    def test_changing_inputs_validates_before_touching_the_run(self):
+        run = pipeline.create("INPUTS-1", [str(self.work / "app.log")])
+        with self.assertRaises(ValueError):
+            pipeline.update_inputs(run["id"], log_files=[str(self.work / "missing.log")], source_dir=str(self.work / "src"))
+        unchanged = pipeline.get(run["id"])["inputs"]
+        self.assertEqual(unchanged["log_files"], [str(self.work / "app.log")])
+        self.assertEqual(unchanged["source_dir"], "", "a rejected update leaves every input as it was")
+        with self.assertRaises(ValueError):
+            pipeline.update_inputs(run["id"], source_dir=str(self.work / "no-such-folder"))
+        with self.assertRaises(ValueError):
+            pipeline.update_inputs(run["id"], gate="whatever")
+        with self.assertRaises(ValueError):
+            pipeline.create("INPUTS-2", gate="whatever")
+        changed = pipeline.update_inputs(run["id"], gate="review")
+        self.assertEqual(changed["inputs"]["gate"], "review")
+        self.assertFalse(changed["inputs"]["continue_on_optional_error"], "leaving Skip mode stops on a failed step again")
+
+    def test_a_log_file_that_disappeared_is_skipped_not_fatal(self):
+        gone = self.work / "gone.log"
+        gone.write_text("10-10 12:30:01.200  1000  1001 E Other: failure in gone file\n", encoding="utf-8")
+        run = pipeline.create("GONEFILE-1", [str(gone), str(self.work / "app.log")], use_infographic=False)
+        gone.unlink()
+        pipeline.executor.start(run["id"], until="log")
+        self.wait()
+        run = pipeline.get(run["id"])
+        self.assertEqual(run["steps"]["log"]["status"], "done", run["steps"]["log"]["error"])
+        self.assertIn("status=133", (pipeline.run_dir(run["id"]) / "03-log-brief.md").read_text(encoding="utf-8"))
 
     def test_jira_only_skips_optional_steps(self):
         run = pipeline.create("XYZ-7")
