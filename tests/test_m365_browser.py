@@ -78,5 +78,68 @@ class ComposerTest(unittest.TestCase):
         self.assertTrue(browser.DEFAULT_PROMPT.strip())
 
 
+FIXTURE = ROOT / "tests" / "fixtures" / "m365_composer.html"
+
+
+@unittest.skipIf(browser is None, "playwright not installed")
+class LivePageTest(unittest.TestCase):
+    """The worker against a copy of the real picker / composer markup, in a real browser."""
+
+    @classmethod
+    def setUpClass(cls):
+        from playwright.sync_api import sync_playwright
+        cls.pw = sync_playwright().start()
+        cls.browser = None
+        for options in ({}, {"channel": "msedge"}, {"channel": "chrome"}):
+            try:
+                cls.browser = cls.pw.chromium.launch(**options)
+                break
+            except Exception:
+                continue
+        if cls.browser is None:
+            cls.pw.stop()
+            raise unittest.SkipTest("no Chromium-based browser available")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.browser.close()
+        cls.pw.stop()
+
+    def setUp(self):
+        self.page = self.browser.new_page()
+        self.page.set_content(FIXTURE.read_text(encoding="utf-8"))
+        self.worker = browser.Browser.__new__(browser.Browser)
+
+    def tearDown(self):
+        self.page.close()
+
+    def clicks(self):
+        return self.page.evaluate("window.clicks")
+
+    def test_localized_labels_match_and_the_active_model_is_left_alone(self):
+        self.assertEqual(browser._model_key("GPT-5.6 Sol Tư duy sâu"), browser._model_key("GPT-5.6 Sol Think Deeper"))
+        self.assertNotEqual(browser._model_key("GPT-5.6 Sol Tư duy"), browser._model_key("GPT-5.6 Sol Think Deeper"))
+        self.worker.select_model(self.page, "GPT-5.6 Sol Think Deeper")
+        self.assertEqual(self.clicks(), [], "already active (shown in Vietnamese): nothing is clicked")
+
+    def test_a_model_in_the_vendor_submenu_is_selected(self):
+        self.worker.select_model(self.page, "GPT-5.6 Sol Think")
+        self.assertEqual(self.clicks(), ["GPT-5.6 Sol Tư duy"])
+        self.assertEqual(self.page.inner_text("#current"), "GPT-5.6 Sol Tư duy")
+
+    def test_mode_radios_and_the_plus_menu_are_never_clicked(self):
+        with self.assertRaises(RuntimeError):
+            self.worker.select_model(self.page, "Claude Opus", attempts=1)
+        self.assertEqual([c for c in self.clicks() if c in ("Tự động", "Phản hồi nhanh", "Tư duy sâu", "PLUS")], [])
+
+    def test_composer_prompt_and_send_button(self):
+        box = self.worker.composer(self.page)
+        self.assertEqual(box.get_attribute("id"), "m365-chat-editor-target-element")
+        self.assertTrue(self.worker.type_prompt(self.page, box, "Thực hiện phân tích đi. Jira issue ABC-1."))
+        self.assertIn("Thực hiện phân tích", self.worker.composer_text(box))
+        self.assertTrue(self.worker.click_send(self.page))
+        self.assertEqual(self.clicks(), ["SEND"])
+
+
 if __name__ == "__main__":
     unittest.main()

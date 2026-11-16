@@ -1,0 +1,56 @@
+<!doctype html>
+<!-- Reduced copy of the M365 Copilot chat page (Vietnamese UI, Nov 2026): the model picker with its mode radios
+     (testids -Magic / -Chat / -Reasoning) and the OpenAI submenu trigger, the Lexical composer, the "+" menu
+     and the send button. Roles, testids, aria attributes and labels are taken from the live page; the content
+     of the OpenAI submenu is simulated. window.clicks records what the automation clicked. -->
+<html lang="vi">
+<head><meta charset="utf-8"><style>[hidden] { display: none; } [role=menu] { border: 1px solid #ccc; padding: 4px; width: 280px; }</style></head>
+<body>
+  <button id="gptModeSwitcher" type="button" aria-haspopup="menu"><span id="current">GPT-5.6 Sol Tư duy sâu</span></button>
+  <div id="menu" role="menu" class="fui-MenuList" hidden>
+    <div role="menuitemradio" tabindex="0" data-testid="gptSubMenuModelTrigger-Magic" aria-checked="false"><span><div>Tự động</div></span><span><div>Quyết định thời gian suy nghĩ</div></span></div>
+    <div role="menuitemradio" tabindex="0" data-testid="gptSubMenuModelTrigger-Chat" aria-checked="false"><span><div>Phản hồi nhanh</div></span><span><div>Trả lời ngay lập tức</div></span></div>
+    <div role="menuitemradio" tabindex="0" data-testid="gptSubMenuModelTrigger-Reasoning" aria-checked="false"><span><div>Tư duy sâu</div></span><span><div>Suy nghĩ lâu hơn để có câu trả lời tốt hơn</div></span></div>
+    <div role="separator" aria-orientation="horizontal"></div>
+    <div role="menuitem" tabindex="0" aria-haspopup="menu" aria-expanded="false" data-testid="gptSubMenuModelTrigger-OpenAI"><span><div id="vendorModel">GPT-5.6 Sol Tư duy sâu</div></span><span><div>OpenAI</div></span></div>
+  </div>
+  <div id="sub" role="menu" hidden>
+    <div role="menuitemradio" tabindex="0" aria-checked="true"><svg data-testid="checkmark-Gpt_5_6_Reasoning" width="1" height="1"></svg><div>GPT-5.6 Sol Tư duy sâu</div></div>
+    <div role="menuitemradio" tabindex="0" aria-checked="false"><div>GPT-5.6 Sol Tư duy</div></div>
+    <div role="menuitemradio" tabindex="0" aria-checked="false"><div>GPT 6 Luna</div></div>
+  </div>
+  <div class="fai-BebopLiteChatInput__inputWrapper">
+    <div class="fai-BebopLiteChatInput__attachments"></div>
+    <span role="textbox" contenteditable="true" tabindex="0" aria-label="Nhắn tin cho Copilot" id="m365-chat-editor-target-element"
+          data-lexical-editor="true" data-placeholder="Nhắn tin cho Copilot" style="display:inline-block;min-width:300px;min-height:20px"><p><br></p></span>
+    <button type="button" data-testid="PlusMenuButton" aria-haspopup="menu" aria-expanded="false" aria-label="Thêm và quản lý nguồn">+</button>
+    <button type="button" aria-label="Bắt đầu đọc chính tả">mic</button>
+    <button type="submit" aria-label="Gửi" class="fui-Button fai-SendButton fai-BebopLiteChatInput__send">↑</button>
+  </div>
+  <script>
+    window.clicks = [];
+    const menu = document.getElementById('menu'), sub = document.getElementById('sub');
+    const trigger = document.querySelector('[data-testid="gptSubMenuModelTrigger-OpenAI"]');
+    const close = () => { menu.hidden = true; sub.hidden = true; trigger.setAttribute('aria-expanded', 'false'); };
+    document.getElementById('gptModeSwitcher').onclick = () => { const open = menu.hidden; close(); menu.hidden = !open; };
+    const openSub = () => { sub.hidden = false; trigger.setAttribute('aria-expanded', 'true'); };
+    trigger.addEventListener('mouseenter', openSub);
+    trigger.addEventListener('click', openSub);
+    for (const row of document.querySelectorAll('[role="menuitemradio"]')) {
+      row.addEventListener('click', () => {
+        const label = row.innerText.trim().split('\n')[0];
+        window.clicks.push(label);
+        for (const other of row.parentElement.querySelectorAll('[role="menuitemradio"]')) other.setAttribute('aria-checked', String(other === row));
+        if (row.parentElement === sub) {
+          document.getElementById('current').textContent = label;
+          document.getElementById('vendorModel').textContent = label;
+        }
+        close();
+      });
+    }
+    document.querySelector('[data-testid="PlusMenuButton"]').onclick = () => window.clicks.push('PLUS');
+    document.querySelector('.fai-SendButton').onclick = () => window.clicks.push('SEND');
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
+  </script>
+</body>
+</html>

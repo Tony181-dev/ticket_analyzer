@@ -7,6 +7,7 @@ import base64
 import re
 import shutil
 import time
+import unicodedata
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 URL = "https://m365.cloud.microsoft/chat"
@@ -15,8 +16,29 @@ DEFAULT_MODEL = "GPT-5.6 Sol Think Deeper"  # legacy; the app passes the chosen 
 MODEL_SELECT_ATTEMPTS = 3
 # M365 Copilot will not send attachments on their own: an empty composer keeps Send disabled.
 DEFAULT_PROMPT = "Thực hiện phân tích theo các file đính kèm. / Please analyze the attached files."
+def _fold(text):
+    """Lower-case text without accents ("Tư duy sâu" -> "tu duy sau"); Hangul syllables are kept."""
+    text = unicodedata.normalize("NFKD", (text or "").replace("đ", "d").replace("Đ", "D"))
+    text = "".join(c for c in text if not unicodedata.combining(c))
+    return unicodedata.normalize("NFC", text).casefold()
 def _norm(text):
-    return re.sub(r"[^a-z0-9]+", "", (text or "").casefold())
+    return re.sub(r"[^a-z0-9\uac00-\ud7a3]+", "", _fold(text))
+# The picker is localized: the same model shows as "GPT-5.6 Sol Think Deeper" (English UI) or
+# "GPT-5.6 Sol Tư duy sâu" (Vietnamese UI). Compare labels in one canonical (English) form.
+_MODEL_WORDS = (("tuduysau", "thinkdeeper"), ("tuduy", "think"), ("phanhoinhanh", "quickresponse"),
+                ("tudong", "auto"))
+def _model_key(text):
+    key = _norm(text)
+    for local, english in _MODEL_WORDS:
+        key = key.replace(local, english)
+    return key
+# Model menu rows. The mode radios ("Tự động" / "Phản hồi nhanh" / "Tư duy sâu", testids -Magic / -Chat /
+# -Reasoning) share the gptSubMenuModelTrigger prefix with the vendor submenu triggers: only rows with
+# aria-haspopup="menu" open a submenu - the others select a mode the moment they are clicked.
+_SUBMENU_TRIGGERS = ('[data-testid^="gptSubMenuModelTrigger"][aria-haspopup="menu"]',
+                     '[data-test-id^="gptSubMenuModelTrigger"][aria-haspopup="menu"]')
+_MODEL_MENU_ROWS = ('[data-testid^="gptSubMenuModelTrigger"]', '[data-test-id^="gptSubMenuModelTrigger"]',
+                    '[role="menuitemradio"]')
 def launch_args():
     # Must stay identical to setup.py's launch_args() so the profile behaves the same way
     # during the interactive setup login as it does later during headless/headed automation.
@@ -111,9 +133,11 @@ class Browser:
         return None
     def composer(self, page):
         selectors = (
+            "#m365-chat-editor-target-element",
+            "[data-lexical-editor='true'][contenteditable='true']",
+            "[role='textbox'][contenteditable='true']",
             "textarea[placeholder]",
             "textarea",
-            "[data-lexical-editor='true'][contenteditable='true']",
             "div[contenteditable='true'][role='textbox']",
             "[contenteditable='true'][aria-label*='message' i]",
             "[contenteditable='true'][aria-label*='ask' i]",
@@ -219,34 +243,29 @@ class Browser:
             raise last_error
     def _triggers(self, page, name=""):
         """Visible submenu triggers of the model menu; the vendor matching `name` comes first."""
-        selectors = (
-            '[data-test-id^="gptSubMenuModelTrigger"]',
-            '[data-testid^="gptSubMenuModelTrigger"]',
-            '[role="menuitem"][aria-haspopup="menu"]',
-        )
         found, seen = [], set()
         for root in self.roots(page):
-            for selector in selectors:
+            for selector in _SUBMENU_TRIGGERS:
                 try:
                     matches = root.locator(selector)
                     for index in range(min(matches.count(), 10)):
                         item = matches.nth(index)
                         if not item.is_visible():
                             continue
-                        label = _norm(item.inner_text()) or f"{selector}{index}"
+                        label = _model_key(item.inner_text()) or f"{selector}{index}"
                         if label not in seen:
                             seen.add(label)
                             found.append((item, label))
                 except Exception:
                     pass
-        key = _norm(name)
+        key = _model_key(name)
         hints = ("gpt", "openai") if "gpt" in key else ("claude", "anthropic") if "claude" in key else ()
         found.sort(key=lambda pair: 0 if any(hint in pair[1] for hint in hints) else 1)
         return [item for item, _ in found]
     def _option(self, page, name=DEFAULT_MODEL, wait_ms=5000):
         """Visible menu row for model `name`: exact title first, then prefix, then substring."""
         name = " ".join((name or DEFAULT_MODEL).split())
-        want = _norm(name)
+        want = _model_key(name)
         legacy = name.casefold() == DEFAULT_MODEL.casefold()
         deadline = time.time() + wait_ms / 1000
         best, best_score = None, 0
@@ -259,7 +278,7 @@ class Browser:
                     continue
                 for index, text in enumerate(texts[:60]):
                     lines = text.strip().splitlines()
-                    key = _norm(lines[0] if lines else "")
+                    key = _model_key(lines[0] if lines else "")
                     if not key:
                         continue
                     score = 4 if key == want else 3 if key.startswith(want) else 2 if want in key else 1 if len(key) >= 6 and want.startswith(key) else 0
@@ -322,16 +341,15 @@ class Browser:
         except Exception:
             pass
     def _menu_open(self, page):
-        if self._triggers(page):
-            return True
         for root in self.roots(page):
-            try:
-                items = root.locator('[role="menuitemradio"]')
-                for index in range(min(items.count(), 20)):
-                    if items.nth(index).is_visible():
-                        return True
-            except Exception:
-                pass
+            for selector in _MODEL_MENU_ROWS:
+                try:
+                    items = root.locator(selector)
+                    for index in range(min(items.count(), 20)):
+                        if items.nth(index).is_visible():
+                            return True
+                except Exception:
+                    pass
         return False
     def _open_model_menu(self, page):
         # The picker button label changes with the selected model, so a text selector is
@@ -352,6 +370,7 @@ class Browser:
         # Sidebar "more" buttons are menu buttons too; never probe them (a stray click can navigate away).
         generic = (
             'button[aria-haspopup="menu"]:not([data-chat-history-more-button-conversation-id])'
+            ':not([data-testid="PlusMenuButton"])'  # the composer's "+" (add sources) menu
             ':not([aria-label="Xem th\u00eam"]):not([aria-label="See more"])'
         )
         for selector in (*named, generic):
@@ -387,7 +406,7 @@ class Browser:
                 pass
         return ""
     def _select_model_once(self, page, name):
-        if _norm(self._current_model(page)) == _norm(name):
+        if _model_key(self._current_model(page)) == _model_key(name):
             return name  # already active: do not touch the menu
         if not self._open_model_menu(page):
             raise RuntimeError("Model picker not found")
@@ -528,6 +547,8 @@ class Browser:
 
     def click_send(self, page):
         selectors = (
+            "button.fai-SendButton[type='submit']",
+            "button[type='submit'][aria-label='G\u1eedi']",  # Vietnamese UI: "Gửi"
             "button[type='submit'][aria-label='Send']",
             "button[type='submit'][aria-label*='Send' i]",
             "button[aria-label='Send']",
