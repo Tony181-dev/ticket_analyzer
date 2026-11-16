@@ -207,6 +207,8 @@ for (const b of document.querySelectorAll('.mode-btn')) {
 for (const b of document.querySelectorAll('.lang-btn')) {
   b.onclick = guard(async () => {
     S.state.settings = await api('/api/settings', { body: { lang: b.dataset.lang } });
+    // Step notes / errors are re-rendered by the server in the new language: fetch the open run again.
+    if (S.run) { try { S.run = await api(`/api/runs/${encodeURIComponent(S.run.id)}`); } catch { /* keep the old copy */ } }
     I18N.set(b.dataset.lang);
     renderMode();
     renderHistory();

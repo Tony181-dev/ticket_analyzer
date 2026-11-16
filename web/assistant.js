@@ -46,7 +46,7 @@
       rows.push(`<div class="asst-files">${a.names.slice(0, 8).map((n) => `<code>${esc(n)}</code>`).join('')}${a.names.length > 8 ? `<span class="muted">+${a.names.length - 8}</span>` : ''}</div>`);
     }
     if (a.time_start || a.time_end) rows.push(`<div class="asst-kv">${icon('i-clock', 13)} ${esc(a.time_start || '…')} → ${esc(a.time_end || '…')}</div>`);
-    if (a.shift_minutes != null) rows.push(`<div class="asst-kv">${esc(t('asst.shift'))}: ${esc(String(a.shift_minutes))} min</div>`);
+    if (a.shift_minutes != null) rows.push(`<div class="asst-kv">${esc(t('asst.shift'))}: ${esc(t('asst.minutes', { n: a.shift_minutes }))}</div>`);
     if (a.type === 'resolve_timezone') rows.push(`<div class="asst-kv">${icon('i-clock', 13)} ${esc(t('tz.mode.' + a.mode))}${a.ticket_utc_offset ? ' · UTC' + esc(a.ticket_utc_offset) : ''}</div>`);
     if (a.skip_logs) rows.push(`<div class="asst-kv">${esc(t('asst.skipLogs'))}</div>`);
     if (a.changes) rows.push(Object.entries(a.changes).map(([k, v]) => `<div class="asst-kv"><code>${esc(k)}</code> → <b>${esc(JSON.stringify(v))}</b></div>`).join(''));
@@ -84,7 +84,7 @@
         </div>
         <div class="asst-action-go">${actionButton(m, a, i)}</div>
       </div>`).join('');
-    const usage = m.usage ? ` · ${fmtNum(m.usage.input_tokens)} in / ${fmtNum(m.usage.output_tokens)} out` : '';
+    const usage = m.usage ? ' · ' + t('asst.tokens', { in: fmtNum(m.usage.input_tokens), out: fmtNum(m.usage.output_tokens) }) : '';
     return `<div class="asst-msg bot"><div class="bubble md">${body}${actions ? `<div class="asst-actions">${actions}</div>` : ''}</div>
       <div class="meta">${esc(fmtTime(m.time))}${m.model ? ' · ' + esc(m.model) : ''}${m.seconds ? ` · ${m.seconds}s` : ''}${esc(usage)}</div></div>`;
   }
@@ -240,7 +240,8 @@
       const msg = A.messages.find((x) => x.id === m.message_id);
       if (msg && msg.actions && msg.actions[m.index]) msg.actions[m.index] = m.action;
     } else if (m.type === 'assistant_cleared') {
-      A.messages = [];
+      A.messages = []; A.bugs = m.bugs || []; A.unread = 0; A.pending = null;
+      $('#asstPeek').hidden = true;
     } else if (m.type === 'assistant_bugs') {
       A.bugs = m.bugs || [];
     }
@@ -249,7 +250,11 @@
 
   function sync() {
     if (S.run) onRun(S.run);
-    if ($('#asstPanel')) { $('#asstContext').innerHTML = contextLine(); $('#asstChips').innerHTML = chips(); renderBadge(); }
+    if ($('#asstPanel')) {
+      $('#asstContext').innerHTML = contextLine(); $('#asstChips').innerHTML = chips();
+      $('#asstBugs').title = t('asst.bugs', { n: A.bugs.length });
+      renderBadge();
+    }
   }
 
   // ------------------------------------------------------------ wiring
@@ -260,8 +265,15 @@
     $('#asstScan').onclick = guard(async () => { await send('', 'scan'); });
     $('#asstBugs').onclick = guard(async () => { await api('/api/assistant/open-bugs', { body: {} }); });
     $('#asstClear').onclick = guard(async () => {
-      if (!A.messages.length || confirm(t('asst.clearConfirm'))) await api('/api/assistant/clear', { body: {} });
+      // Clean slate: conversation, local bug tickets (the counter) and the remembered errors.
+      if (!A.messages.length && !A.bugs.length) return;
+      const ask = A.bugs.length ? t('asst.clearConfirmBugs', { n: A.bugs.length }) : t('asst.clearConfirm');
+      if (!confirm(ask)) return;
+      const res = await api('/api/assistant/clear', { body: {} });
+      onEvent({ type: 'assistant_cleared', bugs: (res && res.bugs) || [] });
     });
+    // New language: the welcome, labels and the app-written bubbles (scan requests, errors) come back translated.
+    document.addEventListener('langchange', () => { if (A.loaded) load(); else render(); });
     $('#asstStop').onclick = guard(async () => { await api('/api/assistant/stop', { body: {} }); });
     $('#asstForm').onsubmit = guard(async (e) => {
       e.preventDefault();

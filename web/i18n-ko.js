@@ -35,6 +35,8 @@ I18N.extend('ko', {
   'help.title': '옵션 설명', 'help.open': '설명 보기', 'help.close': '닫기',
   'asst.title': 'AI 어시스턴트', 'asst.open': 'AI 어시스턴트 (Copilot CLI)', 'asst.scan': '시스템 점검 및 제안',
   'asst.bugs': '로컬 버그 티켓 ({n}) — 폴더 열기', 'asst.clear': '대화 지우기', 'asst.clearConfirm': '어시스턴트와의 대화를 모두 지울까요?',
+  'asst.clearConfirmBugs': '어시스턴트와의 대화를 모두 지우고 로컬 버그 티켓 {n}개(data/bugs)도 삭제할까요? 되돌릴 수 없습니다.',
+  'asst.minutes': '{n}분', 'asst.tokens': '입력 {in} / 출력 {out}',
   'asst.ph': '어시스턴트에게 질문… (Enter 전송, Shift+Enter 줄바꿈)', 'asst.send': '보내기', 'asst.stop': '답변 중지',
   'asst.thinking': '시스템을 살펴보는 중… {s}초', 'asst.do': '실행', 'asst.retry': '다시 시도', 'asst.done': '완료',
   'asst.shift': '로그 시각 보정', 'asst.skipLogs': '로그 없이 계속', 'asst.resume': '계속', 'asst.from': '시작', 'asst.until': '종료', 'asst.only': '이 단계만',

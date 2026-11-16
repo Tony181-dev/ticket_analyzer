@@ -39,6 +39,32 @@ _SUBMENU_TRIGGERS = ('[data-testid^="gptSubMenuModelTrigger"][aria-haspopup="men
                      '[data-test-id^="gptSubMenuModelTrigger"][aria-haspopup="menu"]')
 _MODEL_MENU_ROWS = ('[data-testid^="gptSubMenuModelTrigger"]', '[data-test-id^="gptSubMenuModelTrigger"]',
                     '[role="menuitemradio"]')
+# Upload progress of one file, looked for in the composer area only (M365's input wrapper around the Lexical
+# editor): chips naming the file (text, title or aria-label; the name without its extension counts too),
+# entries of the attachment list, and visible progress indicators.
+_UPLOAD_STATE_JS = r"""(name) => {
+  const low = (s) => (s || '').toLowerCase();
+  const full = low(name), stem = low(name.replace(/\.[^.]+$/, ''));
+  const shown = (el) => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+  const editor = document.querySelector('#m365-chat-editor-target-element')
+    || document.querySelector('[data-lexical-editor="true"][contenteditable="true"]')
+    || document.querySelector('[role="textbox"][contenteditable="true"]');
+  let area = editor && (editor.closest('[class*="inputWrapper" i]') || editor.closest('[class*="ChatInput" i]'));
+  if (!area && editor) { area = editor; for (let i = 0; i < 4 && area.parentElement; i++) area = area.parentElement; }
+  const scope = area || document.body;
+  const named = (el) => [el.getAttribute('title'), el.getAttribute('aria-label'), el.textContent].map(low)
+    .some((v) => v.includes(full) || (stem.length >= 4 && v.includes(stem)));
+  let chips = 0;
+  for (const el of scope.querySelectorAll('*')) {
+    if ((editor && editor.contains(el)) || !shown(el) || !named(el)) continue;
+    if ([...el.children].some(named)) continue;  // count the innermost element of a chip once
+    chips++;
+  }
+  const list = scope.querySelector('[class*="attachments" i]');
+  const items = list ? [...list.children].filter(shown).length : 0;
+  const busy = [...scope.querySelectorAll('[role="progressbar"], [aria-busy="true"], [class*="spinner" i]')].some(shown);
+  return { scoped: !!area, chips, items, busy };
+}"""
 def launch_args():
     # Must stay identical to setup.py's launch_args() so the profile behaves the same way
     # during the interactive setup login as it does later during headless/headed automation.
@@ -303,11 +329,16 @@ class Browser:
                 return best
             page.wait_for_timeout(150)
     def _available(self, page):
+        """Visible menu rows, for the error message (hidden menus - Share, Settings, Help… - are left out)."""
         names = []
         for root in self.roots(page):
             try:
-                for text in root.locator('[role="menuitemradio"],[role="menuitem"],[role="option"]').all_inner_texts():
-                    lines = text.strip().splitlines()
+                rows = root.locator('[role="menuitemradio"],[role="menuitem"],[role="option"]')
+                for index in range(min(rows.count(), 40)):
+                    row = rows.nth(index)
+                    if not row.is_visible():
+                        continue
+                    lines = (row.inner_text() or "").strip().splitlines()
                     if lines and lines[0].strip() not in names:
                         names.append(lines[0].strip())
             except Exception:
@@ -405,8 +436,13 @@ class Browser:
             except Exception:
                 pass
         return ""
+    def _active(self, page, name):
+        """True / False when the picker button tells whether `name` is the active model (labels compared
+        without case, accents or UI language); None when there is no such button."""
+        label = self._current_model(page)
+        return _model_key(label) == _model_key(name) if label else None
     def _select_model_once(self, page, name):
-        if _model_key(self._current_model(page)) == _model_key(name):
+        if self._active(page, name):
             return name  # already active: do not touch the menu
         if not self._open_model_menu(page):
             raise RuntimeError("Model picker not found")
@@ -414,7 +450,9 @@ class Browser:
         if not option:
             shown = ", ".join(self._available(page)) or "none"
             raise RuntimeError(f"Model {name!r} not found in the picker (visible: {shown})")
-        if (option.get_attribute("aria-checked") or "").lower() != "true":
+        # A vendor submenu keeps its last model checked while a mode such as "Auto" is the active one, so a
+        # checked row is still clicked when the picker button shows another model.
+        if (option.get_attribute("aria-checked") or "").lower() != "true" or self._active(page, name) is False:
             option.click(timeout=3000)
             page.wait_for_timeout(500)
             self._verify_model(page, name)
@@ -422,6 +460,8 @@ class Browser:
     def _verify_model(self, page, name):
         # Re-open the picker: some builds ignore the first click, so confirm the radio is checked.
         self._dismiss_model_menu(page)
+        if self._active(page, name):
+            return
         if not self._open_model_menu(page):
             return
         option = self._find_option(page, name)
@@ -451,23 +491,43 @@ class Browser:
             except Exception:
                 pass
         return None
-    def upload(self, page, file_path):
+    def _upload_state(self, page, name):
+        """{chips, items, busy} of the composer area: file chips naming `name`, attachment-list entries and
+        whether a visible progress indicator is still spinning there."""
+        best = None
+        for root in self.roots(page):
+            try:
+                state = root.evaluate(_UPLOAD_STATE_JS, name)
+            except Exception:
+                continue
+            if state.get("scoped"):
+                return state
+            best = best or state
+        return best or {"chips": 0, "items": 0, "busy": False}
+    def upload(self, page, file_path, timeout=60):
+        """Attach one file and wait until M365 shows it as uploaded.
+
+        Done = one more chip naming the file (full name, name without extension, or its tooltip) or one more
+        entry in the attachment list than before, with no visible progress indicator left in the composer.
+        Only the composer area counts: the same file name already in the conversation (an earlier step)
+        and spinners elsewhere on the page (hidden or not) used to make this wait return too early or time
+        out ("Attachment upload did not complete")."""
         file_input = self.file_input(page)
         if not file_input:
             raise RuntimeError("Attachment control not found")
-        file_input.set_input_files(file_path)
         name = Path(file_path).name
-        deadline = time.time() + 30
+        before = self._upload_state(page, name)
+        file_input.set_input_files(file_path)
+        deadline = time.time() + timeout
+        state = before
         while time.time() < deadline:
-            try:
-                found = page.get_by_text(name, exact=False).count()
-                busy = page.locator("[aria-busy='true'],[role='progressbar']").count()
-                if found and not busy:
-                    return
-            except Exception:
-                pass
-            page.wait_for_timeout(500)
-        raise RuntimeError("Attachment upload did not complete: " + name)
+            page.wait_for_timeout(400)
+            state = self._upload_state(page, name)
+            added = state["chips"] > before["chips"] or state["items"] > before["items"]
+            if added and not state["busy"]:
+                return
+        reason = "still uploading" if state["chips"] > before["chips"] or state["items"] > before["items"] else "no file chip appeared"
+        raise RuntimeError(f"Attachment upload did not complete: {name} ({reason} after {timeout}s)")
     def _cards(self, page):
         output, seen = [], set()
         selectors = (

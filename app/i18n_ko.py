@@ -94,6 +94,8 @@ KO = {
     "err.picker": "파일 선택 창을 열 수 없습니다(Tkinter 없음?). 경로를 직접 붙여넣으세요.",
     "note.review": "보고서를 검토한 뒤 'Collab에 게시'를 누르세요",
     "note.stopped": "중지됨",
+    "note.stopped_kept": "다시 실행 중지됨 — 이전 결과 유지",
+    "log.stopped_kept": "■ {step} 중지됨 — 이전 실행 결과를 유지합니다",
     "note.skip_nolog": "로그 파일 없음",
     "note.skip_nosrc": "소스 폴더 없음",
     "note.skip_no_attached_logs": "티켓에 로그 첨부 파일이 없고 선택한 로그 파일도 없습니다",

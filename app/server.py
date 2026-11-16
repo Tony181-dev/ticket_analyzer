@@ -142,7 +142,7 @@ class Handler(BaseHTTPRequestHandler):
             m = re.fullmatch(r"/api/runs/([^/]+)", p)
             if m:
                 run = pipeline.get(m.group(1))
-                return self._send(200, run) if run else self._send(404, {"error": "run not found"})
+                return self._send(200, pipeline.view(run)) if run else self._send(404, {"error": "run not found"})
             m = re.fullmatch(r"/api/runs/([^/]+)/files/([^/]+)", p)
             if m:
                 return self._file(pipeline.read_file(m.group(1), m.group(2)))
@@ -158,7 +158,7 @@ class Handler(BaseHTTPRequestHandler):
         if not m:
             return self._send(404, {"error": "not found"})
         try:
-            self._send(200, pipeline.write_file(m.group(1), m.group(2), self._body()))
+            self._send(200, pipeline.view(pipeline.write_file(m.group(1), m.group(2), self._body())))
         except Exception as exc:
             self._send(400, {"error": str(exc)})
 
@@ -218,8 +218,7 @@ class Handler(BaseHTTPRequestHandler):
                 assistant.stop()
                 return self._send(200, {"ok": True})
             if p == "/api/assistant/clear":
-                assistant.clear()
-                return self._send(200, {"ok": True})
+                return self._send(200, {"ok": True, **assistant.clear()})
             if p == "/api/assistant/open-bugs":
                 assistant.BUGS.mkdir(parents=True, exist_ok=True)
                 _open_folder(assistant.BUGS)
@@ -240,7 +239,7 @@ class Handler(BaseHTTPRequestHandler):
                                       body.get("log_shift_minutes"))
                 if body.get("start", True):
                     pipeline.executor.start(run["id"], until=body.get("until"))
-                return self._send(200, run)
+                return self._send(200, pipeline.view(run))
             m = re.fullmatch(r"/api/runs/([^/]+)/(start|inputs|gate|timezone|log-scan|graph-query|open-folder|attachments)", p)
             if m:
                 run_id, action = m.groups()
@@ -249,12 +248,12 @@ class Handler(BaseHTTPRequestHandler):
                                             until=body.get("until"), resume=bool(body.get("resume")))
                     return self._send(200, {"ok": True})
                 if action == "inputs":
-                    return self._send(200, pipeline.update_inputs(
+                    return self._send(200, pipeline.view(pipeline.update_inputs(
                         run_id, body.get("log_files"), body.get("source_dir"), body.get("auto_attachments"),
                         body.get("download_dir"), body.get("use_codegraph"), body.get("logsleuth"),
                         body.get("use_infographic"), body.get("continue_on_optional_error"),
                         body.get("auto_publish_to_collab"), body.get("gate"),
-                        body["log_shift_minutes"] if "log_shift_minutes" in body else ...))
+                        body["log_shift_minutes"] if "log_shift_minutes" in body else ...)))
                 if action == "gate":
                     pipeline.executor.resolve_gate(
                         run_id, body.get("names") or [], body.get("folder"), body.get("time_start"), body.get("time_end"),

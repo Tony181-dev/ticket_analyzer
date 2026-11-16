@@ -18,7 +18,7 @@ from pathlib import Path
 
 from . import ai, attachments, events, logprep, mcp, paths, settings
 from .evidence import graph as codegraph
-from .i18n import language_name, t
+from .i18n import language_name, relocalize, t
 from .evidence import logsleuth, timealign
 from .evidence.timestamps import (format_offset, normalize_clock, normalize_focus, normalize_shift, parse_focus,
                                   parse_offset)
@@ -275,7 +275,20 @@ def _save(run):
     tmp = run_dir(run["id"]) / "run.json.tmp"
     tmp.write_text(json.dumps(run, ensure_ascii=False, indent=2), encoding="utf-8")
     tmp.replace(run_dir(run["id"]) / "run.json")
-    events.publish("run", run=run)
+    events.publish("run", run=view(run))
+
+
+def view(run):
+    """The run as the browser shows it: stored step notes / errors (written in whatever language was
+    active then) rendered again in the current UI language. run.json itself is left as written."""
+    if not run:
+        return run
+    out = dict(run)
+    out["steps"] = {step: {**state, "note": relocalize(state.get("note")), "error": relocalize(state.get("error"))}
+                    for step, state in (run.get("steps") or {}).items()}
+    if isinstance(run.get("pending_gate"), dict):
+        out["pending_gate"] = {**run["pending_gate"], "problem": relocalize(run["pending_gate"].get("problem"))}
+    return out
 
 
 def get(run_id):
@@ -499,6 +512,31 @@ def update_inputs(run_id, log_files=None, source_dir=None, auto_attachments=None
     return run
 
 
+def _stop_step(run, step, state, prior, fresh):
+    """Stop pressed while `step` ran. A step that had finished before keeps that result when its files are
+    all still there (runners write their outputs at the end): "done" when nothing earlier in this pass
+    produced a new result - and then the steps after it get their status back too - else "stale". Without
+    a previous result the step goes back to idle ("Stopped")."""
+    before = prior.get(step) or {}
+    names = [a.get("name") for a in before.get("artifacts") or [] if isinstance(a, dict) and a.get("name")]
+    kept = (before.get("status") in ("done", "stale") and bool(names)
+            and all((run_dir(run["id"]) / name).exists() for name in names))
+    if not kept:
+        _finish_step(state, "idle", note=t("note.stopped"))
+        return False
+    status = "stale" if fresh or before.get("status") == "stale" else "done"
+    state.update(status=status, note=" · ".join(x for x in (before.get("note"), t("note.stopped_kept")) if x),
+                 error="", started=before.get("started"), ended=before.get("ended"),
+                 elapsed_seconds=before.get("elapsed_seconds", 0.0))
+    if status == "done":
+        for later in ORDER[ORDER.index(step) + 1:]:
+            was = (prior.get(later) or {}).get("status")
+            if run["steps"][later]["status"] == "stale" and was in ("done", "waiting"):
+                run["steps"][later]["status"] = was
+    _log(run, t("log.stopped_kept", step=t("step." + step)))
+    return True
+
+
 def _mark_stale(run, from_step):
     for step in ORDER[ORDER.index(from_step):]:
         state = run["steps"][step]
@@ -625,6 +663,8 @@ class Executor:
         run.pop("pending_tz", None)
         if first < requested_first:
             _log(run, t("log.rewind_stale", step=STEP_TITLE[ORDER[first]], requested=STEP_TITLE[requested_step]))
+        prior = {step: dict(run["steps"][step]) for step in ORDER}  # to keep a result when Stop interrupts a re-run
+        fresh = False  # a step finished in this pass: results after it are outdated
         _mark_stale(run, ORDER[first])
         _open_pass(run, ORDER[first], continued=after_gate)
         events.publish("busy", run_id=run_id, busy=True)
@@ -671,7 +711,7 @@ class Executor:
                         break
                     note = RUNNERS[step](run, cfg, self)
                 except Cancelled:
-                    _finish_step(state, "idle", note=t("note.stopped"))
+                    _stop_step(run, step, state, prior, fresh)
                     _save(run)
                     break
                 except Skip as skipped:
@@ -695,7 +735,7 @@ class Executor:
                     break
                 except Exception as exc:  # surface every failure on the step card
                     if self.cancel.is_set():
-                        _finish_step(state, "idle", note=t("note.stopped"))
+                        _stop_step(run, step, state, prior, fresh)
                     else:
                         _finish_step(state, "error", error=str(exc))
                         _log(run, "✗ " + t("step." + step) + f": {exc}")
@@ -707,6 +747,7 @@ class Executor:
                         continue
                     break
                 _finish_step(state, "done", note=note or "")
+                fresh = True
                 _log(run, "✓ " + t("step." + step) + (f" — {note}" if note else ""))
                 _save(run)
                 if last(step):

@@ -2,7 +2,9 @@
 <!-- Reduced copy of the M365 Copilot chat page (Vietnamese UI, Nov 2026): the model picker with its mode radios
      (testids -Magic / -Chat / -Reasoning) and the OpenAI submenu trigger, the Lexical composer, the "+" menu
      and the send button. Roles, testids, aria attributes and labels are taken from the live page; the content
-     of the OpenAI submenu is simulated. window.clicks records what the automation clicked. -->
+     of the OpenAI submenu, the attachment chips and the English labels (useEnglish()) are simulated.
+     window.clicks records what the automation clicked. Distractors: a hidden app menu (Share / Settings), the
+     file name already in the conversation and a busy indicator outside the composer. -->
 <html lang="vi">
 <head><meta charset="utf-8"><style>[hidden] { display: none; } [role=menu] { border: 1px solid #ccc; padding: 4px; width: 280px; }</style></head>
 <body>
@@ -19,8 +21,11 @@
     <div role="menuitemradio" tabindex="0" aria-checked="false"><div>GPT-5.6 Sol Tư duy</div></div>
     <div role="menuitemradio" tabindex="0" aria-checked="false"><div>GPT 6 Luna</div></div>
   </div>
+  <div role="menu" hidden><div role="menuitem">Share</div><div role="menuitem">Settings</div><div role="menuitem">Help and tips</div></div>
+  <div class="history"><p>Earlier answer about 01-jira.md</p><div aria-busy="true" style="width:8px;height:8px"></div><div role="progressbar" hidden></div></div>
   <div class="fai-BebopLiteChatInput__inputWrapper">
     <div class="fai-BebopLiteChatInput__attachments"></div>
+    <input type="file" id="fileInput" multiple hidden>
     <span role="textbox" contenteditable="true" tabindex="0" aria-label="Nhắn tin cho Copilot" id="m365-chat-editor-target-element"
           data-lexical-editor="true" data-placeholder="Nhắn tin cho Copilot" style="display:inline-block;min-width:300px;min-height:20px"><p><br></p></span>
     <button type="button" data-testid="PlusMenuButton" aria-haspopup="menu" aria-expanded="false" aria-label="Thêm và quản lý nguồn">+</button>
@@ -41,16 +46,36 @@
         const label = row.innerText.trim().split('\n')[0];
         window.clicks.push(label);
         for (const other of row.parentElement.querySelectorAll('[role="menuitemradio"]')) other.setAttribute('aria-checked', String(other === row));
-        if (row.parentElement === sub) {
-          document.getElementById('current').textContent = label;
-          document.getElementById('vendorModel').textContent = label;
-        }
+        // a mode radio makes that mode the active one; the submenu keeps its own checked row
+        document.getElementById('current').textContent = label;
+        if (row.parentElement === sub) document.getElementById('vendorModel').textContent = label;
         close();
       });
     }
     document.querySelector('[data-testid="PlusMenuButton"]').onclick = () => window.clicks.push('PLUS');
     document.querySelector('.fai-SendButton').onclick = () => window.clicks.push('SEND');
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
+    // uploads: a chip (name without extension, full name as tooltip) with a spinner that stops after a moment
+    window.rejectUploads = false;
+    document.getElementById('fileInput').addEventListener('change', (e) => {
+      if (window.rejectUploads) return;
+      for (const file of e.target.files) {
+        setTimeout(() => {
+          const chip = document.createElement('div');
+          chip.className = 'att-chip'; chip.title = file.name;
+          chip.innerHTML = '<span></span><div role="progressbar" style="width:20px;height:4px;background:#888"></div>';
+          chip.querySelector('span').textContent = file.name.replace(/\.[^.]+$/, '');
+          document.querySelector('.fai-BebopLiteChatInput__attachments').appendChild(chip);
+          setTimeout(() => chip.querySelector('[role=progressbar]').remove(), 700);
+        }, 200);
+      }
+    });
+    const EN = { 'Tự động': 'Auto', 'Quyết định thời gian suy nghĩ': 'Decides how long to think', 'Phản hồi nhanh': 'Quick response',
+      'Trả lời ngay lập tức': 'Answers right away', 'Tư duy sâu': 'Think deeper', 'Suy nghĩ lâu hơn để có câu trả lời tốt hơn': 'Thinks longer for better answers',
+      'GPT-5.6 Sol Tư duy sâu': 'GPT-5.6 Sol Think deeper', 'GPT-5.6 Sol Tư duy': 'GPT-5.6 Sol Think' };
+    window.useEnglish = () => {
+      for (const el of document.querySelectorAll('div, span')) if (!el.children.length && EN[el.textContent]) el.textContent = EN[el.textContent];
+    };
   </script>
 </body>
 </html>

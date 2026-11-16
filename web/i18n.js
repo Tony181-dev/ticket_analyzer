@@ -42,6 +42,8 @@
       'help.title': 'Giải thích lựa chọn', 'help.open': 'Xem giải thích', 'help.close': 'Đóng',
       'asst.title': 'Trợ lý AI', 'asst.open': 'Trợ lý AI (Copilot CLI)', 'asst.scan': 'Quét hệ thống & đề xuất',
       'asst.bugs': 'Bug ticket nội bộ ({n}) — mở thư mục', 'asst.clear': 'Xoá hội thoại', 'asst.clearConfirm': 'Xoá toàn bộ hội thoại với trợ lý?',
+      'asst.clearConfirmBugs': 'Xoá toàn bộ hội thoại với trợ lý và {n} bug ticket nội bộ (data/bugs)? Không hoàn tác được.',
+      'asst.minutes': '{n} phút', 'asst.tokens': '{in} token vào / {out} token ra',
       'asst.ph': 'Hỏi trợ lý… (Enter để gửi, Shift+Enter xuống dòng)', 'asst.send': 'Gửi', 'asst.stop': 'Dừng trả lời',
       'asst.thinking': 'Đang xem hệ thống & suy nghĩ… {s}s', 'asst.do': 'Thực hiện', 'asst.retry': 'Thử lại', 'asst.done': 'Đã xong',
       'asst.shift': 'Lệch giờ log', 'asst.skipLogs': 'Tiếp tục không dùng log', 'asst.resume': 'Tiếp tục', 'asst.from': 'từ', 'asst.until': 'đến', 'asst.only': 'chỉ bước này',
@@ -246,6 +248,8 @@
       'help.title': 'Option details', 'help.open': 'Show explanation', 'help.close': 'Close',
       'asst.title': 'AI assistant', 'asst.open': 'AI assistant (Copilot CLI)', 'asst.scan': 'Scan the system & suggest',
       'asst.bugs': 'Local bug tickets ({n}) — open folder', 'asst.clear': 'Clear conversation', 'asst.clearConfirm': 'Clear the whole assistant conversation?',
+      'asst.clearConfirmBugs': 'Clear the whole assistant conversation and delete the {n} local bug ticket(s) (data/bugs)? This cannot be undone.',
+      'asst.minutes': '{n} min', 'asst.tokens': '{in} in / {out} out',
       'asst.ph': 'Ask the assistant… (Enter to send, Shift+Enter for a new line)', 'asst.send': 'Send', 'asst.stop': 'Stop answering',
       'asst.thinking': 'Looking at the system & thinking… {s}s', 'asst.do': 'Do it', 'asst.retry': 'Retry', 'asst.done': 'Done',
       'asst.shift': 'Log clock shift', 'asst.skipLogs': 'Continue without logs', 'asst.resume': 'Continue', 'asst.from': 'from', 'asst.until': 'until', 'asst.only': 'this step only',
@@ -443,6 +447,8 @@
     lang = LANGS.includes(next) ? next : 'vi';
     try { localStorage.setItem('ta.lang', lang); } catch { /* ignore */ }
     apply();
+    // Parts drawn by script (assistant panel, …) re-render themselves on this event.
+    document.dispatchEvent(new CustomEvent('langchange', { detail: { lang } }));
   }
 
   if (!LANGS.includes(lang)) lang = 'vi';

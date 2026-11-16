@@ -23,7 +23,7 @@ from pathlib import Path
 from . import __version__, attachments, doctor, events, logprep, paths, pipeline, settings
 from .ai import copilot
 from .evidence.timestamps import format_offset, normalize_clock, parse_offset
-from .i18n import language_name, t
+from .i18n import language_name, relocalize, t
 
 DIR = paths.DATA / "assistant"
 WORK = DIR / "work"
@@ -169,20 +169,42 @@ def _model(cfg):
     return cfg.get("copilot_model") or "auto"
 
 
+def _view(message):
+    """A chat message as the panel shows it: app-written texts (scan requests, errors) in the current language."""
+    out = dict(message)
+    if out.get("role") == "user" and out.get("kind") == "scan":
+        out["text"] = relocalize(out.get("text"))
+    if out.get("error"):
+        out["error"] = relocalize(out["error"])
+    return out
+
+
 def state():
     with _lock:
-        messages = list(_chat()["messages"])
+        messages = [_view(m) for m in _chat()["messages"]]
     return {"messages": messages, "busy": busy(), "started": _job["started"], "bugs": list_bugs()[:30],
             "bugs_dir": str(BUGS), "model": _model(settings.load())}
 
 
 def clear():
+    """The trash button: a clean slate - conversation, local bug tickets (the counter in the panel), the
+    remembered app errors and the per-turn work files. Proactive-scan keys stay, so old events are not
+    scanned again. Returns what is left (bug files that could not be deleted)."""
     with _lock:
         if busy():
             raise RuntimeError(t("asst.busy"))
         _chat()["messages"] = []
         _store()
-    events.publish("assistant_cleared")
+        _errors.clear()
+        for path in BUGS.glob("BUG-*.md") if BUGS.is_dir() else []:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+        shutil.rmtree(WORK, ignore_errors=True)
+        left = list_bugs()[:30]
+    events.publish("assistant_cleared", bugs=left)
+    return {"bugs": left}
 
 
 # ---------------------------------------------------------------- asking

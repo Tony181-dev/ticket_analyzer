@@ -1,8 +1,12 @@
 """Server-side messages in Vietnamese, English and Korean (settings["lang"]).
 
 MESSAGES holds (vi, en) pairs; Korean lives in i18n_ko.KO and falls back to English.
-Notes already stored in a run keep the language they were written in.
+Step notes and errors are stored as text in the language they were written in; relocalize() renders them
+again in the current UI language when a run is sent to the browser.
 """
+import re
+from functools import lru_cache
+
 from . import settings
 from .i18n_ko import KO
 
@@ -106,6 +110,8 @@ MESSAGES = {
                    "Could not open the file dialog (Tkinter missing?). Paste the path instead."),
     "note.review": ("Kiểm tra report rồi bấm 'Đăng lên Collab'", "Review the report, then click 'Publish to Collab'"),
     "note.stopped": ("Đã dừng", "Stopped"),
+    "note.stopped_kept": ("Đã dừng lần chạy lại — giữ kết quả trước", "Re-run stopped — previous result kept"),
+    "log.stopped_kept": ("■ Đã dừng {step} — giữ kết quả của lần chạy trước", "■ Stopped {step} — the previous result is kept"),
     "note.skip_nolog": ("Không có file log", "No log files"),
     "note.skip_nosrc": ("Không chọn folder source", "No source folder"),
     "note.skip_no_attached_logs": ("Ticket không có log đính kèm và chưa chọn file log", "The ticket has no log attachments and no log file was chosen"),
@@ -246,10 +252,72 @@ def language_name(code=None):
     return LANGUAGES[code or lang()]
 
 
+def _template(key, code):
+    pair = MESSAGES[key]
+    return KO.get(key, pair[1]) if code == "ko" else pair[1] if code == "en" else pair[0]
+
+
 def t(key, **kw):
-    pair = MESSAGES.get(key)
-    if not pair:
+    if key not in MESSAGES:
         return key
-    code = lang()
-    text = KO.get(key, pair[1]) if code == "ko" else pair[1] if code == "en" else pair[0]
+    text = _template(key, lang())
     return text.format(**kw) if kw else text
+
+
+# ---------------------------------------------------------------- re-rendering stored messages
+_FIELD = re.compile(r"\{(\w+)(?::[^{}]*)?\}")
+# what step cards and the assistant's scan bubbles show; log lines stay as written
+RELOCALIZED = ("note.", "err.", "step.", "tz.", "asst.")
+
+
+@lru_cache(maxsize=1)
+def _patterns():
+    """(regex, key) for every vi / en / ko template of the step-card messages, most specific first.
+    Templates with fewer than 4 literal letters ("lỗi: {error}") would match almost anything and are left out."""
+    found = []
+    for key in MESSAGES:
+        if not key.startswith(RELOCALIZED):
+            continue
+        for text in {_template(key, code) for code in LANGUAGES}:
+            literal = _FIELD.sub("", text)
+            if len(re.sub(r"[\W_]", "", literal)) < 4:
+                continue
+            parts, seen = [], set()
+            for index, piece in enumerate(_FIELD.split(text)):
+                if index % 2:  # a field name (split keeps the capture group)
+                    # a value never spans the " · " that joins notes ("<title> · 18 attachment(s)")
+                    parts.append(f"(?P={piece})" if piece in seen else f"(?P<{piece}>(?:(?! · ).)+?)")
+                    seen.add(piece)
+                elif piece:
+                    parts.append(re.escape(piece))
+            found.append((len(literal), re.compile("".join(parts), re.S), key))
+    found.sort(key=lambda item: -item[0])
+    return tuple((regex, key) for _, regex, key in found)
+
+
+def _render(text, code, depth=0):
+    for regex, key in _patterns():
+        match = regex.fullmatch(text)
+        if match:
+            values = {name: (_render(value, code, depth + 1) or value) if depth < 1 else value
+                      for name, value in match.groupdict().items()}
+            return _FIELD.sub(lambda field: values.get(field.group(1), field.group(0)), _template(key, code))
+    return None
+
+
+@lru_cache(maxsize=4096)
+def _relocalize(text, code):
+    whole = _render(text, code)
+    if whole is not None:
+        return whole
+    if " · " in text:  # notes are often joined: "<Jira title> · 18 attachment(s)"
+        return " · ".join(_render(part, code) or part for part in text.split(" · "))
+    return text
+
+
+def relocalize(text, code=None):
+    """`text` (a stored step note or error, in any of the three languages) in the current UI language.
+    Text that is not one of our messages (an exception, a Jira title) comes back unchanged."""
+    if not isinstance(text, str) or not text.strip():
+        return text
+    return _relocalize(text, code or lang())
