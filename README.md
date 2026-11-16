@@ -64,7 +64,7 @@ Mạng công ty chặn SSL: `start.bat` và Setup tự xử lý bằng chứng c
 
 | | M365 Copilot | Copilot CLI |
 |---|---|---|
-| Cách gọi | Playwright điều khiển m365.cloud.microsoft/chat, đính kèm file | `copilot -p … -s`, chỉ cấp quyền đọc file trong thư mục run |
+| Cách gọi | Playwright điều khiển m365.cloud.microsoft/chat, đính kèm file (tối đa 3 file mỗi prompt: khi nhiều hơn, app gộp các file bằng chứng thành 2 file, instruction giữ riêng) | `copilot -p … -s`, chỉ cấp quyền đọc file trong thư mục run |
 | Model | Chọn theo tên hiển thị trong M365 (mặc định GPT-5.6 Sol Think Deeper) | `--model`, để trống = auto |
 | Infographic | Ảnh do M365 Copilot tạo | Nội dung tóm tắt do CLI tạo, render thành SVG cục bộ |
 | Đăng nhập | Nút “Đăng nhập M365” | `copilot login` hoặc `gh auth login` |

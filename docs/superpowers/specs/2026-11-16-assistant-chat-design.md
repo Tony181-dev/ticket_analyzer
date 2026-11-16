@@ -61,5 +61,9 @@ for defects of Ticket Analyzer itself.
   (localized diagram heading); a warning when publishing a report written in another language.
 - M365 Copilot: a full workflow run opens a new conversation; the prompt is verified in the composer before
   sending (attachments alone are never sent; fill → insert_text → key presses, then a clear error).
+  M365 accepts at most 3 attachments per prompt: beyond that `ai.m365_attachments` keeps the instruction
+  (always last) and any non-text file whole and combines the text evidence, in order and size-balanced, into
+  bundle files with `===== FILE: <name> =====` markers; the prompt says which file went where. The worker
+  rejects more than 3 attachments.
 - Attachment download progress: one bar per file (queued / downloading % / downloaded / already present /
   failed / extracting / extracted).
