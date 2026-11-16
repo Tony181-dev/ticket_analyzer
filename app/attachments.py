@@ -121,6 +121,33 @@ def from_issue_json(text):
     return _normalize(found)
 
 
+_UNITS = {"": 1, "b": 1, "byte": 1, "bytes": 1, "k": 1024, "kb": 1024, "kib": 1024,
+          "m": 1024 ** 2, "mb": 1024 ** 2, "mib": 1024 ** 2, "g": 1024 ** 3, "gb": 1024 ** 3, "gib": 1024 ** 3,
+          "t": 1024 ** 4, "tb": 1024 ** 4, "tib": 1024 ** 4}
+
+
+def parse_size(value):
+    """Bytes from an int or a human string such as "77 kB", "1.5 MB", "1,2 MB", "12345"; 0 when unknown."""
+    if isinstance(value, bool) or value is None:
+        return 0
+    if isinstance(value, (int, float)):
+        return max(int(value), 0)
+    m = re.match(r"^\s*([\d.,]+)\s*([a-zA-Z]*)\s*$", str(value))
+    if not m:
+        return 0
+    num, unit = m.group(1), m.group(2).lower()
+    if unit not in _UNITS:
+        return 0
+    if "," in num and "." not in num and not re.fullmatch(r"\d{1,3}(,\d{3})+", num):
+        num = num.replace(",", ".")  # decimal comma: "1,2 MB"
+    else:
+        num = num.replace(",", "")   # thousands separator: "12,345"
+    try:
+        return int(float(num) * _UNITS[unit])
+    except ValueError:
+        return 0
+
+
 def _normalize(items):
     out, seen = [], set()
     for a in items:
@@ -130,7 +157,7 @@ def _normalize(items):
             continue
         seen.add((aid, name))
         out.append({
-            "id": aid or name, "filename": name, "size": int(a.get("size") or 0),
+            "id": aid or name, "filename": name, "size": parse_size(a.get("size")),
             "mime": a.get("mimeType") or a.get("content_type") or a.get("mime_type") or "",
             "created": a.get("created") or "", "url": a.get("content") or a.get("url") or "",
             "kind": kind_of(name),

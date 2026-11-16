@@ -979,7 +979,7 @@ def _attachment_picks(run):
 def _within_budget(run, picks, cap_mb):
     """Skip mode: the picks that fit the download limit, in order (a split archive counts with all its parts)."""
     available = [a["filename"] for a in run.get("attachments") or []]
-    size = {a["filename"]: int(a.get("size") or 0) for a in run.get("attachments") or []}
+    size = {a["filename"]: attachments.parse_size(a.get("size")) for a in run.get("attachments") or []}
     left = int(cap_mb) * 1024 ** 2 if cap_mb else None
     chosen, dropped = [], []
     for pick in picks:

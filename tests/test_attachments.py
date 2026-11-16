@@ -370,6 +370,24 @@ class AttachmentTest(unittest.TestCase):
         self.assertEqual(len(expanded), 18, "selected split volumes expand to the full archive")
 
 
+class SizeParsingTest(unittest.TestCase):
+    def test_human_readable_sizes(self):
+        p = attachments.parse_size
+        self.assertEqual(p(12345), 12345)
+        self.assertEqual(p("12345"), 12345)
+        self.assertEqual(p("77 kB"), 77 * 1024)
+        self.assertEqual(p("1.5 MB"), int(1.5 * 1024 ** 2))
+        self.assertEqual(p("1,5 MB"), int(1.5 * 1024 ** 2))
+        self.assertEqual(p("12,345 B"), 12345)
+        self.assertEqual(p("2GB"), 2 * 1024 ** 3)
+        for bad in (None, "", "?", "77 parsecs", True):
+            self.assertEqual(p(bad), 0)
+
+    def test_issue_json_with_string_size(self):
+        payload = json.dumps({"attachments": [{"id": "1", "filename": "log.zip", "size": "77 kB"}]})
+        self.assertEqual(attachments.from_issue_json(payload)[0]["size"], 77 * 1024)
+
+
 class HistoryResetTest(unittest.TestCase):
     def test_clear_runs_keeps_the_running_one(self):
         keep = pipeline.create("KEEP-1")
