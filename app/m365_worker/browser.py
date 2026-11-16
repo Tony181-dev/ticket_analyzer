@@ -13,6 +13,8 @@ URL = "https://m365.cloud.microsoft/chat"
 PROFILE = Path.home() / ".cache" / "consult_with_copilot" / "browser_profile"
 DEFAULT_MODEL = "GPT-5.6 Sol Think Deeper"  # legacy; the app passes the chosen model
 MODEL_SELECT_ATTEMPTS = 3
+# M365 Copilot will not send attachments on their own: an empty composer keeps Send disabled.
+DEFAULT_PROMPT = "Thực hiện phân tích theo các file đính kèm. / Please analyze the attached files."
 def _norm(text):
     return re.sub(r"[^a-z0-9]+", "", (text or "").casefold())
 def launch_args():
@@ -497,6 +499,33 @@ class Browser:
             return box.inner_text() or ""
         except Exception:
             return ""
+    def type_prompt(self, page, box, prompt):
+        """Put `prompt` into the composer and confirm it is really there before sending.
+
+        The rich-text composer sometimes ignores fill() (notably right after an attachment upload), which left
+        only the files in the box - M365 then refuses to send and the old "composer is empty = sent" check
+        mistook that for success. Tries fill, then insert_text, then real key presses."""
+        probe = _norm(prompt)[:24]
+        for attempt in ("fill", "insert", "keys"):
+            try:
+                box.click()
+                if attempt == "fill":
+                    box.fill(prompt)
+                else:
+                    box.press("Control+A")
+                    box.press("Backspace")
+                    if attempt == "insert":
+                        page.keyboard.insert_text(prompt)
+                    else:
+                        box.press_sequentially(prompt, delay=0)
+            except Exception:
+                continue
+            page.wait_for_timeout(250)
+            typed = _norm(self.composer_text(box))
+            if typed and (not probe or probe in typed):
+                return True
+        return False
+
     def click_send(self, page):
         selectors = (
             "button[type='submit'][aria-label='Send']",
@@ -632,18 +661,15 @@ class Browser:
             before = self._cards(page)
             before_images = self.image_srcs(page) if image_dir else []
             box = self.wait_composer(page)
-            box.click()
-            try:
-                box.fill(prompt)
-            except Exception:
-                box.press("Control+A")
-                box.press("Backspace")
-                box.press_sequentially(prompt, delay=0)
+            if not self.type_prompt(page, box, (prompt or "").strip() or DEFAULT_PROMPT):
+                raise RuntimeError("PROMPT_NOT_ENTERED: the prompt could not be typed into the M365 composer, "
+                                   "so the attachments alone cannot be sent")
             box.press("Enter")
             # Enter alone is not always registered by this composer (multi-line editors,
             # an attachment upload still settling, etc.), so verify the message actually
-            # left the composer before assuming it was sent. Only fall back to a second
-            # Enter and then the real Send button if that quick check fails.
+            # left the composer before assuming it was sent - the prompt was confirmed in the
+            # box above, so an empty composer now really means "sent". Only fall back to a
+            # second Enter and then the real Send button if that quick check fails.
             sent = False
             check_deadline = time.time() + 4
             while time.time() < check_deadline:

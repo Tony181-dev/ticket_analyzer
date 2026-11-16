@@ -70,8 +70,10 @@ _PLANTUML_MACRO_RE = re.compile(
     r'.*?</ac:structured-macro>'
 )
 _CDATA_RE = re.compile(r"(?is)<!\[CDATA\[(.*?)\]\]>")
+# The report is written in the UI language (English / Vietnamese / Korean), so is this heading.
+DIAGRAM_HEADINGS = {"en": "Diagnostic Diagram", "vi": "Sơ đồ chẩn đoán", "ko": "진단 다이어그램"}
 _DIAGRAM_HEADING_RE = re.compile(
-    r"(?is)<h[2-3]\b[^>]*>\s*Diagnostic\s+Diagrams?\s*</h[2-3]>"
+    r"(?is)<h[2-3]\b[^>]*>\s*(?:Diagnostic\s+Diagrams?|S[ơo]\s+đ[ồo]\s+ch[ẩa]n\s+đo[áa]n|진단\s*다이어그램)\s*</h[2-3]>"
 )
 _SEQUENCE_PARTICIPANT_RE = re.compile(
     r"(?im)^\s*(?:actor|boundary|control|entity|database|collections|queue|participant)\s+"

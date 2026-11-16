@@ -18,11 +18,12 @@ from pathlib import Path
 
 from . import ai, attachments, events, logprep, mcp, paths, settings
 from .evidence import graph as codegraph
-from .i18n import t
+from .i18n import language_name, t
 from .evidence import logsleuth, timealign
-from .evidence.timestamps import normalize_clock, normalize_focus, normalize_shift, parse_focus
+from .evidence.timestamps import (format_offset, normalize_clock, normalize_focus, normalize_shift, parse_focus,
+                                  parse_offset)
 from .report import collab, infographic, preview, storage
-from .report.refine_pipeline import refine_report
+from .report.refine_pipeline import DIAGRAM_HEADINGS, refine_report
 
 STEPS = [
     {"id": "jira", "title": "Jira ticket", "sub": "MCP jira_get_issue"},
@@ -238,6 +239,14 @@ class Skip(Exception):
 
 class NeedGate(Exception):
     """Raised by the log step in Review/Manual mode when the user has to supply or confirm evidence."""
+
+
+class NeedTimezone(Exception):
+    """Raised by the log step in Review/Manual mode when the ticket does not state the time zone of its
+    incident time: the user picks the log clock alignment (suggested / own / no time filter)."""
+
+
+TZ_MODES = ("auto", "suggested", "manual", "bypass")
 
 
 # ---------------------------------------------------------------------------
@@ -609,7 +618,11 @@ class Executor:
                 break
         if first == 0 and not after_gate:
             run["gate_state"] = {}  # a pass from step 1 decides the evidence again
+            # ... and talks to M365 Copilot in a brand-new conversation: a full run never inherits the
+            # previous run's chat context. Re-running from a later step keeps the conversation.
+            run["session_id"] = str(uuid.uuid4())
         run.pop("pending_gate", None)
+        run.pop("pending_tz", None)
         if first < requested_first:
             _log(run, t("log.rewind_stale", step=STEP_TITLE[ORDER[first]], requested=STEP_TITLE[requested_step]))
         _mark_stale(run, ORDER[first])
@@ -672,6 +685,12 @@ class Executor:
                     _finish_step(state, "waiting")
                     _log(run, "⏸ " + t("step." + step) + f": {need}")
                     _open_gate(run, str(need))
+                    paused = True
+                    break
+                except NeedTimezone as need:
+                    _finish_step(state, "waiting", note=t("note.tz_wait"))
+                    _log(run, "⏸ " + t("step." + step) + f": {need}")
+                    _save(run)
                     paused = True
                     break
                 except Exception as exc:  # surface every failure on the step card
@@ -741,6 +760,46 @@ class Executor:
         _save(run)
         self._download(run, names, "log", resume=True)
 
+    def resolve_timezone(self, run_id, mode, shift_minutes=None, time_start=None, time_end=None,
+                         ticket_utc_offset=None):
+        """The user's answer when the ticket does not state its time zone: `suggested` / `manual` apply a log
+        clock shift (minutes, log - ticket), `auto` lets the app align by itself, `bypass` drops the time
+        filter (full log range). The log step then runs again with that decision."""
+        run = self._idle_run(run_id)
+        if mode not in TZ_MODES:
+            raise ValueError(t("err.tz_mode"))
+        decision = {"mode": mode}
+        if mode in ("suggested", "manual"):
+            shift = normalize_shift(shift_minutes)
+            if shift is None:
+                raise ValueError(t("err.tz_shift"))
+            decision["shift_minutes"] = shift
+        focus = dict(run.get("focus") or {})
+        if ticket_utc_offset not in (None, ""):
+            offset = parse_offset(ticket_utc_offset)
+            if offset is None:
+                raise ValueError(t("err.tz_offset"))
+            focus["ticket_utc_offset"] = decision["ticket_utc_offset"] = format_offset(offset)
+        changed_window = False
+        for key, value in (("time_start", time_start), ("time_end", time_end)):
+            if isinstance(value, str) and value.strip():
+                clock = normalize_clock(value)
+                if clock is None:
+                    raise ValueError(t("err.time_format"))
+                changed_window = changed_window or clock != focus.get(key)
+                focus[key] = clock
+        if changed_window or "ticket_utc_offset" in decision:
+            run["focus"] = _clean_focus(focus)
+            _write(run, "02-focus.json", json.dumps(run["focus"], ensure_ascii=False, indent=2))
+            run.setdefault("gate_state", {})["focus_confirmed"] = True
+        run.setdefault("gate_state", {})["tz"] = decision
+        run.pop("pending_tz", None)
+        run["steps"]["log"].update(status="idle", note="", error="")
+        how = t("tz." + mode) + (f" ({_shift_text(decision['shift_minutes'])})" if "shift_minutes" in decision else "")
+        _log(run, t("log.tz_decided", how=how))
+        _save(run)
+        self.start(run_id, "log")
+
     def _idle_run(self, run_id):
         if self.busy:
             raise RuntimeError(t("err.busy"))
@@ -762,7 +821,9 @@ class Executor:
         added_volumes = sum(1 for name in names - selected if attachments.is_7z_volume(name))
         analyze = {a["filename"] for a in run.get("attachments") or [] if a["filename"] in names and _analyzable(a)}
         if names:  # visible at once, before the worker thread has fetched anything
-            run["att_progress"] = {"phase": "download", "done": 0, "total": len(names), "name": ""}
+            queued = [a for a in run.get("attachments") or [] if a["filename"] in names]
+            run["att_progress"] = {"phase": "download", "done": 0, "total": len(names), "name": "",
+                                   "files": list(_progress_files(queued).values())}
             _save(run)
 
         def job():
@@ -829,6 +890,17 @@ def _done(run, step):
 
 def _instruction(name):
     return paths.INSTRUCTIONS / name
+
+
+def _lang_code():
+    code = settings.load().get("lang")
+    return code if code in DIAGRAM_HEADINGS else "vi"
+
+
+def _write_in():
+    """The report, analysis and infographic follow the UI language (Vietnamese / English / Korean)."""
+    return (f"Write all prose in {language_name()}; keep code, log lines, identifiers, file paths and error "
+            "messages verbatim.")
 
 
 def _log_options(run, budget_tokens=None):
@@ -922,6 +994,12 @@ def attachment_folder(run):
     return Path(custom) / run["issue"] if custom else attachments.default_folder(run["issue"])
 
 
+def _progress_files(items):
+    """{filename: progress row} for the per-file progress bars, in download order."""
+    return {a["filename"]: {"name": a["filename"], "size": attachments.parse_size(a.get("size")), "state": "queued",
+                            "pct": 0} for a in items}
+
+
 def _fetch_attachments(run, names, analyze, cancel, step="jira"):
     """Download the named attachments; logs from `analyze` ones join the log inputs. Returns #log files added.
 
@@ -934,10 +1012,21 @@ def _fetch_attachments(run, names, analyze, cancel, step="jira"):
     _log(run, t("log.att_download", n=len(items), folder=folder))
     state = run["steps"][step]
     state.update(status="running", error="")
+    files = _progress_files(items)
+    finished = {"downloaded", "present", "failed", "extracted"}
 
     def progress(phase, done, total, name, pct=None):
-        run["att_progress"] = {"phase": phase, "done": done, "total": total, "name": name, "pct": pct}
-        state["note"] = t("note.att_" + phase, done=done, total=total, name=name)
+        entry = files.get(name)
+        if entry:  # one row per file: queued -> download (pct) -> done / present / failed -> extract -> ready
+            entry.update({"download": {"state": "download", "pct": pct if pct is not None else entry["pct"] or 0},
+                          "downloaded": {"state": "done", "pct": 100}, "present": {"state": "present", "pct": 100},
+                          "failed": {"state": "failed"}, "extract": {"state": "extract"},
+                          "extracted": {"state": "ready"}}.get(phase, {}))
+        overall = "extract" if phase.startswith("extract") else "download"
+        count = done + 1 if phase in finished else done
+        run["att_progress"] = {"phase": overall, "done": count, "total": total, "name": name,
+                               "pct": pct if phase == "download" else None, "files": list(files.values())}
+        state["note"] = t("note.att_" + overall, done=count, total=total, name=name)
         _save(run)
 
     try:
@@ -1095,11 +1184,15 @@ def step_understand(run, cfg, ex):
     gate_state = run.setdefault("gate_state", {})
     gate_state.pop("focus_confirmed", None)  # a fresh AI reading replaces a window typed earlier
     gate_state.pop("resolved", None)
+    gate_state.pop("tz", None)               # ... and the time-zone decision that went with it
+    run.pop("pending_tz", None)
     notes = []
     if focus.get("time_start") or focus.get("time_end"):
         notes.append(t("note.window", start=focus.get("time_start") or "…", end=focus.get("time_end") or "…",
                        confidence=focus.get("confidence") or "?")
                      + (f" {focus['ticket_utc_offset']}" if focus.get("ticket_utc_offset") else ""))
+        if not focus.get("ticket_utc_offset"):
+            notes.append(t("note.tz_unknown"))
     else:
         notes.append(t("note.nowindow"))
     if choose and focus.get("attachments") is not None:
@@ -1136,8 +1229,11 @@ def _use_log_catalog(run, catalog, ex):
     return target
 
 
-def _align_window(run, cfg, ex, files, focus):
-    """Turn the ticket's incident window into the clock the logs print (see app/evidence/timealign.py)."""
+def _align_window(run, cfg, ex, files, focus, manual_shift=None, ask_user=False):
+    """Turn the ticket's incident window into the clock the logs print (see app/evidence/timealign.py).
+
+    With `ask_user` the alignment is only computed as a suggestion: the evidence (log time ranges and the
+    candidate alignments) is stored as run["pending_tz"] and NeedTimezone pauses the step for the user."""
     try:
         spans = logsleuth.span(files, cancel=ex.check)
     except Cancelled:
@@ -1165,12 +1261,25 @@ def _align_window(run, cfg, ex, files, focus):
         return data if isinstance(data, dict) else {}
 
     use_ai = run["inputs"].get("gate") != "manual"
-    result = timealign.align(focus, spans, jira_offset, run["inputs"].get("log_shift_minutes"), ask if use_ai else None)
-    chosen = (f"\n## Applied\n\n- Shift: **{result['shift_minutes']} min** ({result['source']})\n"
+    result = timealign.align(focus, spans, jira_offset, manual_shift, ask if use_ai else None)
+    chosen = (f"\n## {'Suggested (waiting for your choice)' if ask_user else 'Applied'}\n\n"
+              f"- Shift: **{result['shift_minutes']} min** ({result['source']})\n"
               f"- Window in log clock: `{result['time_start'] or '…'}` → `{result['time_end'] or '…'}`\n"
               f"- Why: {result['reason']}\n")
     report.write_text(timealign.report(focus, spans, run.get("attachments"), jira_offset, result["candidates"]) + chosen,
                       encoding="utf-8")
+    if ask_user:
+        keys = ("shift_minutes", "source", "time_start", "time_end", "covered")
+        run["pending_tz"] = {
+            "ticket_start": focus.get("time_start"), "ticket_end": focus.get("time_end"),
+            "incident_date": focus.get("incident_date"), "jira_offset": format_offset(jira_offset) or None,
+            "spans": [{"name": s.get("name"), "format": s.get("format"), "first": s.get("first"), "last": s.get("last"),
+                       "first_ts": s.get("firstTs") or s.get("first"), "last_ts": s.get("lastTs") or s.get("last"),
+                       "wraps": bool(s.get("wraps"))} for s in spans[:30]],
+            "candidates": [{k: option.get(k) for k in keys} for option in result["candidates"]],
+            "suggested": {**{k: result.get(k) for k in keys}, "reason": result["reason"]},
+        }
+        raise NeedTimezone(t("log.tz_wait"))
     _log(run, t("log.align", shift=_shift_text(result["shift_minutes"]), start=result["time_start"] or "…",
                end=result["time_end"] or "…", why=t("align." + result["source"])))
     return result
@@ -1220,6 +1329,10 @@ def step_log(run, cfg, ex):
     except (OSError, ValueError):
         focus = _clean_focus(None)
     alignment = None
+    tz = (run.get("gate_state") or {}).get("tz") or {}
+    if not manual and focus["filter_mode"] == "window" and tz.get("mode") == "bypass":
+        _log(run, t("log.tz_bypass"))
+        focus = _clean_focus({**focus, "time_start": None, "time_end": None})
     if manual:
         _path(run, "03-log-span.md").unlink(missing_ok=True)
         focus = _clean_focus({"time_start": options["time_start"] if options["time_enabled"] else None,
@@ -1231,7 +1344,16 @@ def step_log(run, cfg, ex):
             # catalog the ticket keywords are the only ticket-specific seed, so they are kept.
             focus["keywords"] = []
     else:
-        alignment = _align_window(run, cfg, ex, files, focus)
+        # The ticket time is only as good as its time zone. A shift typed on the run, or the user's
+        # time-zone decision, wins; when the ticket states no zone, Review/Manual stop and ask.
+        shift = run["inputs"].get("log_shift_minutes")
+        if shift is None and tz.get("mode") in ("suggested", "manual"):
+            shift = tz.get("shift_minutes")
+        unknown_zone = not focus.get("ticket_utc_offset") and shift is None and not tz
+        ask_user = unknown_zone and run["inputs"].get("gate") in ("review", "manual")
+        alignment = _align_window(run, cfg, ex, files, focus, shift, ask_user)
+        if unknown_zone:
+            _log(run, "⚠ " + t("log.tz_auto_unknown"))
         focus = {**focus, "time_start": alignment["time_start"], "time_end": alignment["time_end"]}
     out = _path(run, "03-log-brief.md")
     stats = logsleuth.slice_logs(files, out, catalog, focus, cfg["log_budget_tokens"], options, cancel=ex.check)
@@ -1384,7 +1506,7 @@ def step_analyze(run, cfg, ex):
     files.append(_instruction("ticket-analysis.md"))
     names = ", ".join(f.name for f in files[:-1])
     answer = _ask_ai(run, cfg, (f"Jira issue {run['issue']}. Apply the attached instruction ticket-analysis.md to the attached "
-                          f"evidence ({names}) and return the final analysis in Markdown only."),
+                          f"evidence ({names}) and return the final analysis in Markdown only. {_write_in()}"),
                     files, run_dir(run["id"]), session_id=run["session_id"], effort="high", context="long_context")
     ex.check()
     _write(run, "05-analysis.md", storage.strip_chat_wrappers(answer))
@@ -1396,7 +1518,9 @@ def step_format(run, cfg, ex):
         raise RuntimeError(t("err.need_analyze"))
     link = f"{cfg['jira_browse_url'].rstrip('/')}/{run['issue']}"
     raw = _ask_ai(run, cfg, (f"Jira issue {run['issue']} ({link}). Apply the attached report instruction report.md to the attached "
-                       "analysis 05-analysis.md. Return only the single fenced json block described in report.md."),
+                       "analysis 05-analysis.md. Return only the single fenced json block described in report.md. "
+                       f"Report language: {language_name()} - {_write_in()} Title the diagram section "
+                       f"'{DIAGRAM_HEADINGS[_lang_code()]}'."),
                  [_path(run, "05-analysis.md"), _instruction("report.md")], run_dir(run["id"]), session_id=run["session_id"])
     ex.check()
     _write(run, "06-report.raw.txt", raw)
@@ -1437,6 +1561,7 @@ def step_format(run, cfg, ex):
     _write(run, "06-refine.log", "\n".join(refine_log) + "\n")
     _write(run, "06-report.xhtml", report)
     _write(run, "06-report.preview.html", _preview_page(report, run["issue"]))
+    run["report_lang"] = _lang_code()
     return t("note.format", mode=mode, chars=len(report))
 
 
@@ -1447,17 +1572,17 @@ def _preview_page(storage_xhtml, key):
 
 
 _INFOGRAPHIC_JSON_PROMPT = (
-    "Read 05-analysis.md and return exactly one JSON object, no Markdown or code fence, "
-    "with these keys: title (string), summary (string), root_cause (string), timeline (array of objects "
-    "with time and event strings), evidence (array of strings), actions (array of strings). Use the same "
-    "language as the analysis. Use only supported facts; do not invent missing times or causes. Keep each "
-    "list to at most four concise items; use empty arrays when the analysis has no such details.")
+    "Apply the attached instruction infographic.md (section 'JSON contract') to 05-analysis.md and return "
+    "exactly one JSON object, no Markdown or code fence. Keys: title, subtitle, severity, confidence, summary, "
+    "root_cause, key_facts, timeline, evidence, code_locations, actions. Use only supported facts; use empty "
+    "strings or arrays when the analysis has no such details.")
 
 
 def _vector_infographic(run, cfg, ex, analysis):
     """Text-only route: the AI returns the facts as JSON and the app draws the SVG itself."""
-    raw = _ask_ai(run, cfg, f"Jira issue {run['issue']}. " + _INFOGRAPHIC_JSON_PROMPT,
-                  [analysis], run_dir(run["id"]), session_id=run["session_id"], context="long_context")
+    raw = _ask_ai(run, cfg, f"Jira issue {run['issue']}. " + _INFOGRAPHIC_JSON_PROMPT + " " + _write_in(),
+                  [analysis, _instruction("infographic.md")], run_dir(run["id"]), session_id=run["session_id"],
+                  context="long_context")
     ex.check()
     summary = infographic.parse_ai_summary(raw)
     target = _path(run, "06-infographic.svg")
@@ -1469,10 +1594,11 @@ def _generated_image(run, cfg, ex, analysis, staging):
     """M365 image generation; raises when the model returns no usable image (quota, refusal, timeout)."""
     images = ai.ask_image(cfg, (
         f"Jira issue {run['issue']}. Using the analysis in this conversation (also attached as 05-analysis.md), "
-        "create ONE landscape infographic image that summarises the ticket: problem, key timeline, root cause, "
-        "supporting evidence and recommended actions. Write the text in the same language as the analysis. "
+        "create ONE 16:9 landscape infographic image that summarises the ticket: problem, key facts, timeline, "
+        "root cause, supporting evidence and recommended actions. Follow the attached infographic.md "
+        "(section 'Image route') for layout, style and text rules. " + _write_in() + " "
         "Generate the image itself; do not reply with text only."),
-        [analysis], staging, session_id=run["session_id"])
+        [analysis, _instruction("infographic.md")], staging, session_id=run["session_id"])
     ex.check()
     source = Path(images[0]) if images else None
     if not source or not source.is_file():
@@ -1534,6 +1660,8 @@ def step_collab(run, cfg, ex):
     space = (cfg.get("collab_space_key") or "").strip()
     if not space:
         raise RuntimeError(t("err.no_space"))
+    if run.get("report_lang") and run["report_lang"] != _lang_code():
+        _log(run, "⚠ " + t("log.report_lang", was=language_name(run["report_lang"]), now=language_name()))
     title = f"{run['issue']} - {run.get('summary') or 'Ticket analysis'}"[:240]
     parent = (cfg.get("collab_parent_id") or "").strip()
     log = lambda m: _log(run, m)

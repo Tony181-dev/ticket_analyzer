@@ -8,6 +8,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 import zipfile
 from pathlib import Path
 
@@ -83,7 +84,7 @@ class AttachmentTest(unittest.TestCase):
 
         def fake_ask(cfg, prompt, files, run_dir, session_id=None, small=False, effort=None, context=None, on_usage=None):
             names = [Path(f).name for f in files]
-            if names == ["05-analysis.md"]:
+            if "infographic.md" in names:
                 return json.dumps({"title": "BT failure", "summary": "Connection fails.", "root_cause": "Status 133.",
                                    "timeline": [], "evidence": [], "actions": []})
             if "understand.md" in names:
@@ -129,6 +130,12 @@ class AttachmentTest(unittest.TestCase):
         self.assertEqual(HITS.count("/secure/attachment/1/logs.zip"), before, "nothing is downloaded before the user confirms")
 
         pipeline.executor.resolve_gate(run["id"], ["logs.zip"], None, "12:29", "12:31")
+        self.wait()
+        run = pipeline.get(run["id"])
+        # the ticket states no time zone: Review asks before slicing, here "same clock as the ticket"
+        self.assertEqual(run["steps"]["log"]["status"], "waiting")
+        self.assertIn("pending_tz", run)
+        pipeline.executor.resolve_timezone(run["id"], "suggested", 0)
         self.wait()
         run = pipeline.get(run["id"])
         errors = {k: v["error"] for k, v in run["steps"].items() if v["error"]}
@@ -368,6 +375,32 @@ class AttachmentTest(unittest.TestCase):
         expanded = attachments.expand_7z_volumes(parts[:3], parts)
         self.assertEqual(len(parts[:3]), 3)
         self.assertEqual(len(expanded), 18, "selected split volumes expand to the full archive")
+
+
+class PerFileProgressTest(unittest.TestCase):
+    def test_each_file_has_its_own_progress_row(self):
+        run = pipeline.create("PROG-1", use_infographic=False)
+        run["attachments"] = [{"id": "1", "filename": "a.zip", "size": 2048, "kind": "archive"},
+                              {"id": "2", "filename": "b.log", "size": "77 kB", "kind": "log"},
+                              {"id": "3", "filename": "c.png", "size": 10, "kind": "other"}]
+        seen = []
+
+        def fake_collect(issue, items, analyze, folder, log, cancel, progress):
+            for call in (("download", 0, 3, "a.zip", 40), ("downloaded", 0, 3, "a.zip", 100),
+                         ("download", 1, 3, "b.log"), ("failed", 1, 3, "b.log"),
+                         ("present", 2, 3, "c.png", 100), ("extract", 0, 1, "a.zip"), ("extracted", 0, 1, "a.zip")):
+                progress(*call)
+                seen.append({f["name"]: (f["state"], f["pct"]) for f in run["att_progress"]["files"]})
+            return [], {}
+
+        with mock.patch.object(pipeline.attachments, "collect", side_effect=fake_collect):
+            pipeline._fetch_attachments(run, {"a.zip", "b.log", "c.png"}, set(), lambda: None)
+        self.assertEqual(seen[0], {"a.zip": ("download", 40), "b.log": ("queued", 0), "c.png": ("queued", 0)})
+        self.assertEqual(seen[3]["b.log"][0], "failed")
+        self.assertEqual(seen[4]["c.png"], ("present", 100))
+        self.assertEqual(seen[5]["a.zip"][0], "extract")
+        self.assertEqual(seen[-1], {"a.zip": ("ready", 100), "b.log": ("failed", 0), "c.png": ("present", 100)})
+        self.assertNotIn("att_progress", run, "the rows disappear once the job is over")
 
 
 class SizeParsingTest(unittest.TestCase):

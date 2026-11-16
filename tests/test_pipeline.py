@@ -73,7 +73,7 @@ class FakeWorld:
         names = [Path(f).name for f in files]
         self.prompts.append((prompt, names))
         self.sessions.append(session_id)
-        if names == ["05-analysis.md"]:
+        if "infographic.md" in names:
             if self.fail_infographic:
                 return "This is not valid infographic JSON"
             return json.dumps({
@@ -382,6 +382,16 @@ class PipelineTest(unittest.TestCase):
         self.assertTrue(any(tool == "confluence_upload_attachment" and a["content_id"] == run["collab"]["page_id"]
                     for _, tool, a in new))
 
+        # a later step keeps the conversation; running the whole workflow again opens a new one
+        first_session = run["session_id"]
+        pipeline.executor.start(run["id"], "analyze", only=True)
+        self.wait()
+        self.assertEqual(pipeline.get(run["id"])["session_id"], first_session)
+        pipeline.executor.start(run["id"], until="understand")
+        self.wait()
+        self.assertNotEqual(pipeline.get(run["id"])["session_id"], first_session, "a full run starts a new M365 chat")
+        self.assertEqual(self.world.sessions[-1], pipeline.get(run["id"])["session_id"])
+
     def test_infographic_toggle_skips_step_but_publishes_report(self):
         settings.save({"ai_mode": "copilot", "review_before_publish": True})
         run = pipeline.create("NOINFO-1", [str(self.work / "app.log")], str(self.work / "src"), use_infographic=False)
@@ -590,6 +600,80 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(run["log_stats"]["afterTime"], 1, "only the 05:45 line is inside the hand-set window")
         with self.assertRaises(ValueError):
             pipeline.update_inputs(run["id"], log_shift_minutes=99999)
+
+    def _zoneless(self, issue, gate):
+        """Run steps 1-3 for a ticket that says '14:30' without a zone, against a log printing UTC."""
+        utc_log = self.work / f"{issue}.log"
+        utc_log.write_text(
+            "10-10 05:20:00.000  1000  1001 I BluetoothService: boot\n"
+            "10-10 05:30:01.200  1000  1001 E BluetoothService: connect failed status=133\n"
+            "10-10 05:45:00.000  1000  1001 E AudioRouter: crash in mixer\n", encoding="utf-8")
+        original_ask = pipeline.ai.ask
+
+        def zoneless_ask(cfg, prompt, files, run_dir, session_id=None, small=False, effort=None, context=None, on_usage=None):
+            if "understand.md" in [Path(f).name for f in files]:
+                return ('```json\n{"time_start": "14:29:00", "time_end": "14:31:00", "ticket_utc_offset": null, '
+                        '"confidence": "medium", "reason": "says 14:30", "keywords": ["status=133"]}\n```')
+            if "log-time.md" in [Path(f).name for f in files]:
+                return '```json\n{"shift_minutes": null, "confidence": "none", "reason": "unclear"}\n```'
+            return self.world.ask(cfg, prompt, files, run_dir, session_id=session_id, small=small,
+                                  effort=effort, context=context, on_usage=on_usage)
+
+        pipeline.ai.ask = zoneless_ask
+        self.addCleanup(setattr, pipeline.ai, "ask", original_ask)
+        run = pipeline.create(issue, [str(utc_log)], str(self.work / "src"), use_codegraph=False,
+                              use_infographic=False, gate=gate)
+        pipeline.executor.start(run["id"], until="log")
+        self.wait()
+        run = pipeline.get(run["id"])
+        if gate != "skip":
+            self.assertTrue(run.get("pending_gate"), "the evidence gate comes first")
+            pipeline.executor.resolve_gate(run["id"], [], None, "14:29:00", "14:31:00")
+            self.wait()
+        return pipeline.get(run["id"])
+
+    def test_unknown_ticket_zone_is_asked_in_review_mode(self):
+        run = self._zoneless("TZ-ASK-1", "review")
+        self.assertEqual(run["steps"]["understand"]["status"], "done")
+        self.assertIn("⚠", run["steps"]["understand"]["note"])
+        self.assertEqual(run["steps"]["log"]["status"], "waiting")
+        pending = run["pending_tz"]
+        self.assertEqual((pending["ticket_start"], pending["ticket_end"]), ("14:29:00", "14:31:00"))
+        self.assertEqual(pending["spans"][0]["first"][:5], "05:20")
+        self.assertTrue(pending["candidates"])
+        self.assertFalse((pipeline.run_dir(run["id"]) / "03-log-brief.md").exists(), "nothing is sliced before the choice")
+
+        # drop the time filter: the whole log is used
+        pipeline.executor.resolve_timezone(run["id"], "bypass")
+        self.wait()
+        run = pipeline.get(run["id"])
+        self.assertEqual(run["steps"]["log"]["status"], "done", run["steps"]["log"]["error"])
+        self.assertNotIn("pending_tz", run)
+        self.assertIsNone(run["log_stats"]["timeWindow"])
+        self.assertIsNone(run["log_stats"]["timeAlignment"])
+
+        # a shift set by the user (ticket UTC+9, log UTC) re-slices to 05:29-05:31
+        pipeline.executor.resolve_timezone(run["id"], "manual", -540, ticket_utc_offset="+09:00")
+        self.wait()
+        run = pipeline.get(run["id"])
+        self.assertEqual(run["log_stats"]["timeAlignment"]["source"], "manual")
+        self.assertEqual(run["log_stats"]["timeWindow"]["start"], "05:29:00")
+        self.assertEqual(run["focus"]["ticket_utc_offset"], "+09:00")
+        brief = (pipeline.run_dir(run["id"]) / "03-log-brief.md").read_text(encoding="utf-8")
+        self.assertIn("status=133", brief)
+        self.assertNotIn("crash in mixer", brief)
+        with self.assertRaises(ValueError):
+            pipeline.executor.resolve_timezone(run["id"], "manual")
+        with self.assertRaises(ValueError):
+            pipeline.executor.resolve_timezone(run["id"], "guess")
+
+    def test_unknown_ticket_zone_is_aligned_automatically_in_skip_mode(self):
+        run = self._zoneless("TZ-SKIP-1", "skip")
+        self.assertEqual(run["steps"]["log"]["status"], "done", run["steps"]["log"]["error"])
+        self.assertNotIn("pending_tz", run)
+        log = (pipeline.run_dir(run["id"]) / "run.log").read_text(encoding="utf-8")
+        self.assertIn("⚠", log)
+        self.assertIsNotNone(run["log_stats"]["timeAlignment"])
 
     def test_ticket_keywords_seed_the_brief_when_there_is_no_source_and_no_time(self):
         quiet_log = self.work / "quiet.log"

@@ -51,9 +51,14 @@ POST /api/runs/<id>/start      {from?, only?, until?, resume?, publish?}
 POST /api/runs/<id>/inputs     đổi input (các trường như khi tạo)
 POST /api/runs/<id>/gate       trả lời cổng duyệt {names[], time_start?, time_end?, shift_minutes?,
                                skip_logs?, folder?}
+POST /api/runs/<id>/timezone   trả lời câu hỏi múi giờ (pending_tz) {mode: suggested|manual|auto|bypass,
+                               shift_minutes?, time_start?, time_end?, ticket_utc_offset?}
 GET  /api/runs/<id>/files/<f>  tải artifact (05-analysis.md, 06-report.xhtml, ...)
 POST /api/stop                 dừng run đang chạy
-GET  /api/events               SSE: run / log / busy
+GET  /api/events               SSE: run / log / busy / assistant*
+GET  /api/assistant            hội thoại trợ lý AI, bug ticket nội bộ
+POST /api/assistant/ask        {text?, run_id?, kind: chat|scan, reason?, trigger?}
+POST /api/assistant/action     thực hiện một đề xuất {message_id, index}
 ```
 
 Kịch bản tự động hoàn toàn: tạo run với `"gate": "skip"` rồi poll `GET /api/runs/<id>` (hoặc nghe

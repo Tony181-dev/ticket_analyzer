@@ -6,7 +6,7 @@ import threading
 from . import paths
 
 DEFAULTS = {
-    "lang": "vi",                      # "vi" | "en" (UI + server messages)
+    "lang": "vi",                      # "vi" | "en" | "ko" (UI, server messages and report language)
     "ai_mode": "m365",                 # "m365" | "copilot"
     "m365_model": "GPT-5.6 Sol Think Deeper",
     "m365_headless": True,
@@ -29,12 +29,16 @@ DEFAULTS = {
     "default_use_infographic": True,
     "auto_download_max_mb": 2000,      # Skip mode: total size the AI may download per ticket; 0 = no limit
     "ai_retries": 1,                   # extra attempts after a transient AI failure
+    "assistant_proactive": True,       # chat bubble: auto-scan when the evidence gate opens or a step fails
 }
 VERSION = 4
 M365_MODELS = ["GPT-5.6 Sol Think Deeper", "GPT-5.6 Sol Think", "GPT 6 Luna", "Claude Sonnet", "Claude Opus"]
-COPILOT_MODELS = ["gpt-6-luna", "auto", "gpt-5", "gpt-5-mini", "claude-sonnet-4.5", "claude-opus-4.1"]
+# Copilot CLI `--model` ids (CLI command reference, "Supported models"). The app default stays gpt-6-luna;
+# the CLI's own default is claude-sonnet-5.5, which "auto" may pick. Any other id can be typed in the UI.
+COPILOT_MODELS = ["gpt-6-luna", "auto", "claude-sonnet-5.5", "claude-opus-5.5", "claude-haiku-5.5", "claude-haiku-4.5",
+                  "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-astra", "gpt-5.3-codex", "gemini-3.8-flash"]
 GATES = ("skip", "review", "manual")
-_CHOICES = {"lang": ("vi", "en"), "ai_mode": ("m365", "copilot"), "default_gate": GATES}
+_CHOICES = {"lang": ("vi", "en", "ko"), "ai_mode": ("m365", "copilot"), "default_gate": GATES}
 _RANGES = {"log_budget_tokens": (2000, 50000), "graph_token_budget": (5000, 400000), "axel_connections": (1, 64),
            "port": (1024, 65535), "auto_download_max_mb": (0, 1000000), "ai_retries": (0, 3)}
 _LABELS = {"log_budget_tokens": "Log token cap"}

@@ -332,6 +332,9 @@ def _fetch_axel(axel, url, headers, target, cancel, report, expected=0):
 def download(issue, items, folder, log=print, cancel=lambda: None, progress=lambda *a: None):
     """Download `items` (normalized dicts) into `folder` with the Jira credentials; returns {filename: path}.
 
+    progress(phase, index, total, name, pct=None) per file: "download" (started / pct), then "downloaded",
+    "present" (same size already on disk) or "failed"; a final "download" with total/total and no name.
+
     Like the Ez Collab-Jira extension: the attachment URL is fetched with an Authorization header, using
     multi-connection axel when it is installed and a plain HTTP stream otherwise.
     """
@@ -348,11 +351,13 @@ def download(issue, items, folder, log=print, cancel=lambda: None, progress=lamb
         if target.exists() and a["size"] and target.stat().st_size == a["size"]:
             log(f"= {name} (đã có / already present)")
             done[name] = target
+            progress("present", n, len(items), name, 100)
             continue
         url = a.get("url") or (f"{base}/secure/attachment/{a['id']}/{urllib.parse.quote(name)}" if base else "")
         if not url:
             errors.append(f"{name}: no download URL")
             log(f"✗ {errors[-1]}")
+            progress("failed", n, len(items), name)
             continue
         last = [0.0, -1]
 
@@ -369,6 +374,7 @@ def download(issue, items, folder, log=print, cancel=lambda: None, progress=lamb
                     _fetch_http(url, headers, target, cancel, report)
                 log(f"↓ {name} ({target.stat().st_size:,} B) [{how}]")
                 done[name] = target
+                progress("downloaded", n, len(items), name, 100)
                 break
             except Exception as exc:
                 cancel()  # re-raises when the user pressed Stop
@@ -376,6 +382,7 @@ def download(issue, items, folder, log=print, cancel=lambda: None, progress=lamb
         else:
             errors.append(f"{name}: " + " | ".join(problems))
             log(f"✗ {errors[-1]}")
+            progress("failed", n, len(items), name)
     if errors and not done:
         raise RuntimeError("; ".join(errors))
     progress("download", len(items), len(items), "")
@@ -550,6 +557,7 @@ def collect(issue, items, analyze_names, folder, log=print, cancel=lambda: None,
             logs.append(path)  # LogSleuth reads .gz directly
         else:
             logs += logs_in(path)
+        progress("extracted", k, len(todo), name)
     if todo:
         progress("extract", len(todo), len(todo), "")
     return [str(p) for p in logs], {k: str(v) for k, v in files.items()}

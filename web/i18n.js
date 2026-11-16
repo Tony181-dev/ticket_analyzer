@@ -40,7 +40,36 @@
       'in.autoAttHelp': 'Sau khi lấy ticket, cho phép chọn và tải log/archive đính kèm; log bên trong được thêm vào phân tích. Không tự tải mọi tệp đính kèm.',
       'in.useCodeGraphHelp': 'Thêm đồ thị cấu trúc source vào prompt phân tích. Tắt tùy chọn này không tắt catalog source của LogSleuth.',
       'help.title': 'Giải thích lựa chọn', 'help.open': 'Xem giải thích', 'help.close': 'Đóng',
-      'infographic.auto': 'Tự chạy bước 07 trong luồng',
+      'asst.title': 'Trợ lý AI', 'asst.open': 'Trợ lý AI (Copilot CLI)', 'asst.scan': 'Quét hệ thống & đề xuất',
+      'asst.bugs': 'Bug ticket nội bộ ({n}) — mở thư mục', 'asst.clear': 'Xoá hội thoại', 'asst.clearConfirm': 'Xoá toàn bộ hội thoại với trợ lý?',
+      'asst.ph': 'Hỏi trợ lý… (Enter để gửi, Shift+Enter xuống dòng)', 'asst.send': 'Gửi', 'asst.stop': 'Dừng trả lời',
+      'asst.thinking': 'Đang xem hệ thống & suy nghĩ… {s}s', 'asst.do': 'Thực hiện', 'asst.retry': 'Thử lại', 'asst.done': 'Đã xong',
+      'asst.shift': 'Lệch giờ log', 'asst.skipLogs': 'Tiếp tục không dùng log', 'asst.resume': 'Tiếp tục', 'asst.from': 'từ', 'asst.until': 'đến', 'asst.only': 'chỉ bước này',
+      'asst.helloTitle': 'Chào bạn 👋', 'asst.hello': 'Mình thấy được trạng thái hệ thống: ticket đang mở, các bước, lỗi, attachment, log và cấu hình. Hỏi bất cứ điều gì, hoặc bấm Quét để nhận đề xuất — mọi thay đổi chỉ chạy khi bạn bấm “Thực hiện”.',
+      'asst.ctxDraft': 'Chưa mở ticket — trợ lý xem cấu hình & môi trường', 'asst.ctxRun': 'Đang xem {issue}', 'asst.ctxGate': 'đang chờ chọn bằng chứng',
+      'asst.ctxErr': '{n} bước lỗi', 'asst.ctxRunning': 'đang chạy', 'asst.modelHint': 'Model lấy từ Cấu hình → Model Copilot CLI',
+      'asst.peekTitle': 'Trợ lý có gợi ý', 'asst.openSetup': 'Mở kiểm tra & cài đặt môi trường',
+      'asst.q.gate': 'Nên tải attachment nào và chọn khung giờ nào?', 'asst.q.error': 'Vì sao bước "{step}" lỗi, sửa thế nào?',
+      'asst.q.scan': 'Quét hệ thống & đề xuất', 'asst.q.attachments': 'Attachment nào đáng tải, file nào bỏ qua?',
+      'asst.q.code': 'Source code có liên quan không, bug có thể nằm ở đâu?', 'asst.q.setup': 'Kiểm tra cấu hình & môi trường giúp mình',
+      'asst.q.bug': 'Có lỗi nào của tool cần tạo bug ticket không?',
+      'cfg.asstProactive': 'Trợ lý AI tự quét khi cần chọn bằng chứng hoặc khi một bước lỗi',
+      'cfg.asstProactiveHelp': 'Khi bật: lúc luồng dừng ở bước chọn attachment/khung giờ, hoặc khi một bước bị lỗi, trợ lý tự gọi Copilot CLI một lần để gợi ý (tốn token). Gợi ý chỉ được áp dụng khi bạn bấm “Thực hiện”.',
+      'tz.open': 'Chọn múi giờ', 'tz.intro': 'Ticket không nêu múi giờ của giờ sự cố {start} → {end}. Log lọc theo giờ trong ngày, nên căn sai múi giờ sẽ cắt trượt sự cố — hãy chọn cách căn giờ log trước khi cắt log.',
+      'tz.logRanges': 'Khoảng giờ thực tế của từng file log (giờ log in ra):', 'tz.file': 'File', 'tz.first': 'Dòng đầu', 'tz.last': 'Dòng cuối',
+      'tz.optSuggested': 'Theo gợi ý của hệ thống', 'tz.optManual': 'Tự đặt múi giờ', 'tz.optBypass': 'Bỏ lọc theo giờ — dùng toàn bộ log',
+      'tz.bypassHelp': 'An toàn nhất khi không chắc chắn; brief chỉ lọc theo từ khoá / service nên có thể dài hơn.',
+      'tz.ticketZone': 'Giờ trong ticket là', 'tz.logZone': 'Log in giờ theo', 'tz.window': 'Khung giờ trong log',
+      'tz.shiftLabel': 'Lệch {s}', 'tz.suggested': 'Gợi ý', 'tz.inside': 'nằm trong log', 'tz.outside': 'ngoài khoảng giờ log', 'tz.unknownRange': 'chưa rõ khoảng giờ log',
+      'tz.yourPc': 'máy bạn', 'tz.noCandidates': 'Không có gợi ý — hãy tự đặt hoặc bỏ lọc theo giờ.', 'tz.apply': 'Áp dụng & cắt log', 'tz.askAi': 'Hỏi trợ lý AI',
+      'tz.pickOne': 'Hãy chọn một cách căn giờ',
+      'tz.from': 'Từ (giờ trong ticket)', 'tz.to': 'Đến (giờ trong ticket)',
+      'tz.src.same-clock': 'log in cùng giờ với ticket', 'tz.src.log-utc': 'log in UTC, ticket theo múi giờ ticket nêu',
+      'tz.src.log-utc-jira-zone': 'log in UTC, giờ ticket theo múi giờ của Jira', 'tz.src.log-local-jira-zone': 'ticket ghi UTC, log theo múi giờ của Jira',
+      'tz.src.ai': 'AI suy ra từ khoảng giờ của log', 'tz.src.manual': 'đặt tay', 'tz.src.none': 'không có giờ',
+      'tz.mode.suggested': 'Theo gợi ý', 'tz.mode.manual': 'Tự đặt', 'tz.mode.auto': 'Để hệ thống tự căn', 'tz.mode.bypass': 'Bỏ lọc theo giờ',
+      'asst.q.tz': 'Giờ trong ticket là múi giờ nào, nên căn giờ log thế nào?', 'asst.ctxTz': 'đang chờ chọn múi giờ',
+      'infographic.auto': 'Tự chạy bước 07 (Tạo infographic) trong luồng',
       'infographic.autoHelp': 'Bật để tự tạo infographic khi luồng đến bước 07; tắt để bỏ qua bước này. Nếu tạo ảnh lỗi, bước đăng Collab sẽ không chạy thiếu infographic.',
       'collab.autoPublish': 'Tự động đẩy lên Collab',
       'collab.autoPublishHelp': 'Bật để luồng tự đăng report lên Collab và chạy đến hết. Tắt để dừng ở bước 08 chờ bạn kiểm tra rồi bấm Đăng lên Collab.',
@@ -176,6 +205,7 @@
       'att.progDl': 'Đang tải {done}/{total} tệp…', 'att.progEx': 'Đang giải nén {done}/{total} tệp…',
       'att.progBtn': 'Tiến độ tải tệp đính kèm', 'att.progBtnActive': 'Tiến độ tải {done}/{total}{pct}',
       'att.progTitle': 'Tiến độ tải tệp đính kèm', 'att.progIdle': 'Hiện không có tệp nào đang được tải.',
+      'att.st.queued': 'chờ tải', 'att.st.download': 'đang tải', 'att.st.done': 'đã tải', 'att.st.present': 'đã có sẵn', 'att.st.failed': 'lỗi', 'att.st.extract': 'đang giải nén', 'att.st.ready': 'đã giải nén',
       'att.kind.log': 'log', 'att.kind.archive': 'nén', 'att.kind.other': 'khác', 'att.have': 'đã tải', 'att.analyzed': 'đã phân tích',
       'att.started': 'Đang tải tệp đính kèm… (xem Nhật ký)', 'att.nothing': 'Chưa chọn tệp nào',
       'att.hint': 'Tệp đã có đủ dung lượng trong thư mục đích sẽ không tải lại. Chọn một phần .7z.001 sẽ tự thêm các phần còn lại của bộ nén (ví dụ .002… .018), nên số xử lý có thể nhiều hơn số đã chọn. File log bên trong được đưa vào bước “AI đọc ticket” và “Log brief”.',
@@ -214,7 +244,36 @@
       'in.autoAttHelp': 'After fetching the ticket, choose and download log/archive attachments; logs inside are added to analysis. It does not download every attachment automatically.',
       'in.useCodeGraphHelp': 'Include the source structure graph in the analysis prompt. Turning this off does not disable the LogSleuth source catalog.',
       'help.title': 'Option details', 'help.open': 'Show explanation', 'help.close': 'Close',
-      'infographic.auto': 'Auto-run Step 07 in the workflow',
+      'asst.title': 'AI assistant', 'asst.open': 'AI assistant (Copilot CLI)', 'asst.scan': 'Scan the system & suggest',
+      'asst.bugs': 'Local bug tickets ({n}) — open folder', 'asst.clear': 'Clear conversation', 'asst.clearConfirm': 'Clear the whole assistant conversation?',
+      'asst.ph': 'Ask the assistant… (Enter to send, Shift+Enter for a new line)', 'asst.send': 'Send', 'asst.stop': 'Stop answering',
+      'asst.thinking': 'Looking at the system & thinking… {s}s', 'asst.do': 'Do it', 'asst.retry': 'Retry', 'asst.done': 'Done',
+      'asst.shift': 'Log clock shift', 'asst.skipLogs': 'Continue without logs', 'asst.resume': 'Continue', 'asst.from': 'from', 'asst.until': 'until', 'asst.only': 'this step only',
+      'asst.helloTitle': 'Hi there 👋', 'asst.hello': 'I can see the system: the open ticket, its steps, errors, attachments, logs and settings. Ask anything, or press Scan for suggestions — nothing changes until you click “Do it”.',
+      'asst.ctxDraft': 'No ticket open — looking at settings & environment', 'asst.ctxRun': 'Watching {issue}', 'asst.ctxGate': 'evidence gate waiting',
+      'asst.ctxErr': '{n} failed step(s)', 'asst.ctxRunning': 'running', 'asst.modelHint': 'Model from Settings → Copilot CLI model',
+      'asst.peekTitle': 'The assistant has a suggestion', 'asst.openSetup': 'Open environment check & setup',
+      'asst.q.gate': 'Which attachments and time window should I pick?', 'asst.q.error': 'Why did "{step}" fail and how do I fix it?',
+      'asst.q.scan': 'Scan the system & suggest', 'asst.q.attachments': 'Which attachments are worth downloading, which to skip?',
+      'asst.q.code': 'Is the source code related, where could the bug be?', 'asst.q.setup': 'Check my settings & environment',
+      'asst.q.bug': 'Is there a tool defect worth a bug ticket?',
+      'cfg.asstProactive': 'AI assistant scans by itself when evidence must be chosen or a step fails',
+      'cfg.asstProactiveHelp': 'When on: as the workflow stops at the attachment/time-window choice, or a step fails, the assistant calls Copilot CLI once to suggest what to do (uses tokens). Suggestions only apply when you click “Do it”.',
+      'tz.open': 'Pick time zone', 'tz.intro': 'The ticket states no time zone for the incident time {start} → {end}. Logs are filtered by time of day, so a wrong zone slices past the incident — choose how to align the log clock before slicing.',
+      'tz.logRanges': 'Actual time range of each log file (the clock the log prints):', 'tz.file': 'File', 'tz.first': 'First line', 'tz.last': 'Last line',
+      'tz.optSuggested': 'Suggested by the app', 'tz.optManual': 'Set the zones yourself', 'tz.optBypass': 'No time filter — use the whole log',
+      'tz.bypassHelp': 'Safest when unsure; the brief is filtered by keywords / services only and can be longer.',
+      'tz.ticketZone': 'Ticket time is in', 'tz.logZone': 'Log prints time in', 'tz.window': 'Window in log clock',
+      'tz.shiftLabel': 'Shift {s}', 'tz.suggested': 'Suggested', 'tz.inside': 'inside the log', 'tz.outside': 'outside the log range', 'tz.unknownRange': 'log range unknown',
+      'tz.yourPc': 'your PC', 'tz.noCandidates': 'No suggestion — set the zones yourself or drop the time filter.', 'tz.apply': 'Apply & slice logs', 'tz.askAi': 'Ask the AI assistant',
+      'tz.pickOne': 'Pick one alignment',
+      'tz.from': 'From (ticket clock)', 'tz.to': 'To (ticket clock)',
+      'tz.src.same-clock': 'log prints the ticket\'s clock', 'tz.src.log-utc': 'log prints UTC, ticket uses its stated zone',
+      'tz.src.log-utc-jira-zone': 'log prints UTC, ticket uses Jira\'s zone', 'tz.src.log-local-jira-zone': 'ticket is UTC, log uses Jira\'s zone',
+      'tz.src.ai': 'inferred by the AI from the log ranges', 'tz.src.manual': 'set by hand', 'tz.src.none': 'no time',
+      'tz.mode.suggested': 'Suggested', 'tz.mode.manual': 'Set by you', 'tz.mode.auto': 'Let the app align', 'tz.mode.bypass': 'No time filter',
+      'asst.q.tz': 'Which time zone is the ticket time in, how should the log clock be aligned?', 'asst.ctxTz': 'time zone choice waiting',
+      'infographic.auto': 'Auto-run Step 07 (Create infographic) in the workflow',
       'infographic.autoHelp': 'Turn on to generate an infographic when the workflow reaches Step 07; turn off to skip it. If generation fails, the Collab publish step will not run without the infographic.',
       'collab.autoPublish': 'Automatically publish to Collab',
       'collab.autoPublishHelp': 'Turn on to publish the report to Collab automatically and finish the workflow. Turn off to pause at Step 08 for your review and manual publish.',
@@ -350,6 +409,7 @@
       'att.progDl': 'Downloading {done}/{total} file(s)…', 'att.progEx': 'Extracting {done}/{total} file(s)…',
       'att.progBtn': 'Attachment download progress', 'att.progBtnActive': 'Download progress {done}/{total}{pct}',
       'att.progTitle': 'Attachment download progress', 'att.progIdle': 'No attachment is being downloaded right now.',
+      'att.st.queued': 'queued', 'att.st.download': 'downloading', 'att.st.done': 'downloaded', 'att.st.present': 'already present', 'att.st.failed': 'failed', 'att.st.extract': 'extracting', 'att.st.ready': 'extracted',
       'att.kind.log': 'log', 'att.kind.archive': 'archive', 'att.kind.other': 'other', 'att.have': 'downloaded', 'att.analyzed': 'analyzed',
       'att.started': 'Downloading attachments… (see Log)', 'att.nothing': 'No file selected',
       'att.hint': 'Files already present at the destination with the same size are not fetched again. Selecting a .7z.001 part automatically adds the remaining volumes (for example .002… .018), so the processed count can exceed the number selected. Log files inside feed the “AI reads ticket” and “Log brief” steps.',
@@ -359,9 +419,17 @@
   let lang = 'vi';
   try { lang = localStorage.getItem('ta.lang') || 'vi'; } catch { /* storage blocked */ }
 
+  const LANGS = ['vi', 'en', 'ko'];
+  const LOCALES = { vi: 'vi-VN', en: 'en-GB', ko: 'ko-KR' };
+
   function t(key, vars) {
-    const s = (D[lang] && D[lang][key]) ?? D.vi[key] ?? key;
+    // Korean (added later, in i18n-ko.js) falls back to English, then Vietnamese.
+    const s = (D[lang] && D[lang][key]) ?? (lang !== 'vi' ? D.en[key] : undefined) ?? D.vi[key] ?? key;
     return vars ? s.replace(/\{(\w+)\}/g, (_, k) => (vars[k] ?? '')) : s;
+  }
+
+  function extend(code, dict) {
+    D[code] = Object.assign(D[code] || {}, dict);
   }
 
   function apply(root = document) {
@@ -372,10 +440,11 @@
   }
 
   function set(next) {
-    lang = next === 'en' ? 'en' : 'vi';
+    lang = LANGS.includes(next) ? next : 'vi';
     try { localStorage.setItem('ta.lang', lang); } catch { /* ignore */ }
     apply();
   }
 
-  window.I18N = { t, apply, set, get lang() { return lang; } };
+  if (!LANGS.includes(lang)) lang = 'vi';
+  window.I18N = { t, apply, set, extend, get lang() { return lang; }, get locale() { return LOCALES[lang]; } };
 })();

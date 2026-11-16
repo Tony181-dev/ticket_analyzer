@@ -56,6 +56,26 @@ thắng; đúng một phương án rơi vào khoảng log thì dùng; còn mơ h
 (câu trả lời bị từ chối nếu cửa sổ dịch xong vẫn ngoài log). Mọi bằng chứng và lựa chọn nằm trong
 `03-log-span.md`. Cửa sổ rỗng vẫn fallback quét toàn bộ log như trước.
 
+Ticket **không nêu múi giờ** (`ticket_utc_offset` null) và chưa có lệch đặt tay: ở review/manual bước Log
+dừng (`NeedTimezone`, `run.pending_tz` chứa khoảng giờ từng file, các phương án và gợi ý) cho người dùng
+chọn qua `POST /api/runs/<id>/timezone` — `suggested`/`manual` (lệch phút), `auto`, hoặc `bypass` (bỏ lọc
+theo giờ). Quyết định lưu ở `gate_state.tz`, bị xoá khi bước 2 chạy lại. Skip không dừng, chỉ ghi cảnh báo.
+
+### Trợ lý AI ([app/assistant.py](../app/assistant.py))
+
+Mỗi lượt, server ghi `data/assistant/work/` gồm `context.md` (snapshot có giới hạn: cấu hình, kiểm tra
+môi trường, run đang mở, gate/múi giờ, tệp đính kèm, log, artifact, cuối run.log, lỗi gần đây, bug đã có),
+`conversation.md` và `assistant.md`; Copilot CLI trả lời ở chế độ chỉ đọc, slot tiến trình riêng (chạy song
+song pipeline, Stop của pipeline không giết chat), `--add-dir` cho thư mục run/source/tải về/mã nguồn tool.
+Khối ```actions trong câu trả lời được kiểm tra theo whitelist và chỉ chạy khi người dùng bấm. Bug ticket
+của tool ghi ở `data/bugs/BUG-*.md` (môi trường và đoạn log do app tự thu thập, không trùng tiêu đề).
+
+### Ngôn ngữ
+
+Giao diện và thông điệp server có VI / EN / KO (`web/i18n-ko.js`, `app/i18n_ko.py`, thiếu khoá thì rơi về
+EN). Phân tích, report Collab và infographic viết theo ngôn ngữ giao diện lúc chạy; heading sơ đồ được
+bản địa hoá. Mỗi lần chạy **toàn bộ** workflow mở một phiên M365 mới; chạy lại từ một bước giữ phiên cũ.
+
 ### Token theo lượt chạy
 
 Mỗi lần bấm Chạy mở một bản ghi trong `usage_passes` (từ bước nào, bao nhiêu token, bao lâu, theo

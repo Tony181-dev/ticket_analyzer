@@ -32,13 +32,10 @@ def dialog(kind, title):
 
 
 def pick(kind):
-    en = lang() == "en"
-    if kind == "folder":
-        title = "Choose a folder" if en else "Chọn thư mục"
-    elif kind == "catalog":
-        title = "Choose a LogSleuth catalog" if en else "Chọn LogSleuth catalog"
-    else:
-        title = "Choose log files" if en else "Chọn file log"
+    titles = {"folder": {"vi": "Chọn thư mục", "en": "Choose a folder", "ko": "폴더 선택"},
+              "catalog": {"vi": "Chọn LogSleuth catalog", "en": "Choose a LogSleuth catalog", "ko": "LogSleuth 카탈로그 선택"},
+              "files": {"vi": "Chọn file log", "en": "Choose log files", "ko": "로그 파일 선택"}}
+    title = titles.get(kind, titles["files"])[lang()]
     out = subprocess.run(tool_cmd("pick", kind if kind in ("folder", "catalog") else "files", title),
                          capture_output=True, text=True, timeout=600, cwd=str(paths.ROOT), encoding="utf-8")
     try:

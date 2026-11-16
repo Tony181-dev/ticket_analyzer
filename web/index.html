@@ -37,6 +37,7 @@
       <div class="seg lang" role="radiogroup" data-i18n-title="lang.label">
         <button class="lang-btn" data-lang="vi" role="radio" title="Tiếng Việt" aria-label="Tiếng Việt"><svg class="flag" viewBox="0 0 24 16"><use href="#f-vn"/></svg></button>
         <button class="lang-btn" data-lang="en" role="radio" title="English" aria-label="English"><svg class="flag" viewBox="0 0 24 16"><use href="#f-en"/></svg></button>
+        <button class="lang-btn" data-lang="ko" role="radio" title="한국어" aria-label="한국어"><svg class="flag" viewBox="0 0 24 16"><use href="#f-kr"/></svg></button>
       </div>
       <button id="themeBtn" class="icon-btn theme-btn" data-i18n-title="theme.toggle">
         <svg class="i-moon" viewBox="0 0 24 24" width="20" height="20"><use href="#i-moon"/></svg>
@@ -217,8 +218,8 @@
         <div class="field"><label for="s_space" data-i18n="cfg.space">Collab space key</label><input id="s_space" name="collab_space_key"></div>
         <div class="field"><label for="s_parent"><span data-i18n="cfg.parent">Parent page ID</span> <span class="muted" data-i18n="in.optional"></span></label><input id="s_parent" name="collab_parent_id"></div>
         <div class="field"><label for="s_m365" data-i18n="cfg.m365">Model M365</label><input id="s_m365" name="m365_model"></div>
-        <div class="field"><label for="s_cli"><span data-i18n="cfg.cli">Model Copilot CLI</span> <span class="muted" data-i18n="cfg.cliHint"></span></label><input id="s_cli" name="copilot_model" placeholder="claude-sonnet-4.5"></div>
-        <div class="field"><label for="s_refine"><span data-i18n="cfg.refine">Model refine format</span> <span class="muted">(CLI)</span></label><input id="s_refine" name="refine_model" placeholder="gpt-5-mini"></div>
+        <div class="field"><label for="s_cli"><span data-i18n="cfg.cli">Model Copilot CLI</span> <span class="muted" data-i18n="cfg.cliHint"></span></label><input id="s_cli" name="copilot_model" placeholder="gpt-6-luna" list="copilotModels" autocomplete="off"></div>
+        <div class="field"><label for="s_refine"><span data-i18n="cfg.refine">Model refine format</span> <span class="muted">(CLI)</span></label><input id="s_refine" name="refine_model" placeholder="claude-haiku-5.5" list="copilotModels" autocomplete="off"><datalist id="copilotModels"></datalist></div>
         <div class="field"><label for="s_budget" data-i18n="cfg.budget">Token tối đa cho log brief</label><input id="s_budget" name="log_budget_tokens" type="number" min="2000" max="50000" step="1000"></div>
         <div class="field span2"><label for="s_dl"><span data-i18n="cfg.download">Thư mục tải đính kèm</span> <span class="muted" data-i18n="cfg.downloadHint"></span></label><input id="s_dl" name="download_dir"></div>
         <div class="field"><label for="s_axel"><span data-i18n="cfg.axel">axel</span> <span class="muted" data-i18n="cfg.axelHint"></span></label><input id="s_axel" name="axel_command" placeholder="axel.exe"></div>
@@ -239,6 +240,10 @@
       <div class="check-help">
         <label class="check"><input type="checkbox" name="m365_headless"> <span data-i18n="cfg.headless"></span></label>
         <button type="button" class="help-icon" data-help="cfg.headlessHelp" data-i18n-title="help.open" aria-label="?">?</button>
+      </div>
+      <div class="check-help">
+        <label class="check"><input type="checkbox" name="assistant_proactive"> <span data-i18n="cfg.asstProactive"></span></label>
+        <button type="button" class="help-icon" data-help="cfg.asstProactiveHelp" data-i18n-title="help.open" aria-label="?">?</button>
       </div>
       <div class="modal-foot"><button class="btn btn-primary" type="submit" data-i18n="cfg.save">Lưu</button></div>
     </form>
@@ -298,6 +303,7 @@
         </div>
         <div class="att-bar-track"><div id="attProgressBar" class="att-bar-fill"></div></div>
         <div id="attProgressName" class="muted small"></div>
+        <ol id="attProgressFiles" class="att-files" aria-live="polite"></ol>
       </div>
       <div id="attProgIdle" class="muted" data-i18n="att.progIdle"></div>
     </div>
@@ -314,11 +320,54 @@
     </div>
   </div>
 
+  <!-- AI assistant chat bubble -->
+  <button id="asstFab" class="asst-fab" type="button" aria-expanded="false" aria-controls="asstPanel" data-i18n-title="asst.open">
+    <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><use href="#i-chat"/></svg>
+    <span id="asstBadge" class="asst-badge" hidden></span>
+  </button>
+  <button id="asstPeek" class="asst-peek" type="button" hidden></button>
+  <section id="asstPanel" class="asst-panel" role="dialog" aria-labelledby="asstTitle" hidden>
+    <header class="asst-head">
+      <div class="asst-title">
+        <span class="asst-avatar"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><use href="#i-spark"/></svg></span>
+        <h3 id="asstTitle" data-i18n="asst.title">Trợ lý AI</h3>
+      </div>
+      <div class="asst-tools">
+        <button class="icon-btn" type="button" id="asstScan" data-i18n-title="asst.scan"><svg viewBox="0 0 24 24" width="18" height="18"><use href="#i-scan"/></svg></button>
+        <button class="icon-btn asst-bugs" type="button" id="asstBugs"><svg viewBox="0 0 24 24" width="18" height="18"><use href="#i-bug"/></svg><span id="asstBugCount" class="asst-count" hidden></span></button>
+        <button class="icon-btn" type="button" id="asstClear" data-i18n-title="asst.clear"><svg viewBox="0 0 24 24" width="18" height="18"><use href="#i-trash"/></svg></button>
+        <button class="icon-btn" type="button" id="asstClose" data-i18n-title="drawer.close"><svg viewBox="0 0 24 24" width="18" height="18"><use href="#i-x"/></svg></button>
+      </div>
+    </header>
+    <div class="asst-context" id="asstContext"></div>
+    <div class="asst-body" id="asstBody" aria-live="polite"></div>
+    <div class="asst-chips" id="asstChips"></div>
+    <form class="asst-input" id="asstForm">
+      <textarea id="asstText" rows="1" data-i18n-ph="asst.ph" aria-label="Message"></textarea>
+      <button class="btn btn-primary asst-send" type="submit" id="asstSend" data-i18n-title="asst.send"><svg viewBox="0 0 24 24" width="18" height="18"><use href="#i-send"/></svg></button>
+      <button class="btn asst-stop" type="button" id="asstStop" hidden data-i18n-title="asst.stop"><svg viewBox="0 0 24 24" width="16" height="16"><use href="#i-stop"/></svg></button>
+    </form>
+  </section>
+
   <div id="toast" class="toast" hidden></div>
 
   <svg width="0" height="0" style="position:absolute" aria-hidden="true">
     <defs>
       <symbol id="f-vn" viewBox="0 0 24 16"><rect width="24" height="16" fill="#da251d"/><path fill="#ffde00" d="M12 3.7l1.01 3.11h3.27l-2.64 1.92 1.01 3.11L12 9.92l-2.65 1.92 1.01-3.11-2.64-1.92h3.27z"/></symbol>
+      <symbol id="f-kr" viewBox="0 0 24 16">
+        <rect width="24" height="16" fill="#fff"/>
+        <rect x=".25" y=".25" width="23.5" height="15.5" fill="none" stroke="#d0d5dd" stroke-width=".5"/>
+        <g transform="rotate(33.7 12 8)">
+          <path fill="#cd2e3a" d="M8 8a4 4 0 0 1 8 0z"/><path fill="#0047a0" d="M8 8a4 4 0 0 0 8 0z"/>
+          <circle cx="10" cy="8" r="2" fill="#cd2e3a"/><circle cx="14" cy="8" r="2" fill="#0047a0"/>
+        </g>
+        <g fill="#000">
+          <g transform="translate(4.7 3.5) rotate(-56.3)"><rect x="-1.8" y="-1.5" width="3.6" height=".7"/><rect x="-1.8" y="-.35" width="3.6" height=".7"/><rect x="-1.8" y=".8" width="3.6" height=".7"/></g>
+          <g transform="translate(19.3 3.5) rotate(56.3)"><rect x="-1.8" y="-1.5" width="3.6" height=".7"/><rect x="-1.8" y="-.35" width="1.5" height=".7"/><rect x=".3" y="-.35" width="1.5" height=".7"/><rect x="-1.8" y=".8" width="3.6" height=".7"/></g>
+          <g transform="translate(4.7 12.5) rotate(56.3)"><rect x="-1.8" y="-1.5" width="1.5" height=".7"/><rect x=".3" y="-1.5" width="1.5" height=".7"/><rect x="-1.8" y="-.35" width="3.6" height=".7"/><rect x="-1.8" y=".8" width="1.5" height=".7"/><rect x=".3" y=".8" width="1.5" height=".7"/></g>
+          <g transform="translate(19.3 12.5) rotate(-56.3)"><rect x="-1.8" y="-1.5" width="1.5" height=".7"/><rect x=".3" y="-1.5" width="1.5" height=".7"/><rect x="-1.8" y="-.35" width="1.5" height=".7"/><rect x=".3" y="-.35" width="1.5" height=".7"/><rect x="-1.8" y=".8" width="1.5" height=".7"/><rect x=".3" y=".8" width="1.5" height=".7"/></g>
+        </g>
+      </symbol>
       <symbol id="f-en" viewBox="0 0 24 16">
         <clipPath id="fc-uk"><path d="M0 0H24L0 16Z"/></clipPath>
         <clipPath id="fc-us"><path d="M24 0V16H0Z"/></clipPath>
@@ -349,6 +398,14 @@
       <symbol id="i-skip" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" d="M5 12h14"/></symbol>
       <symbol id="i-refresh" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" d="M19 12a7 7 0 1 1-2.1-5M19 4.5V8h-3.5"/></symbol>
       <symbol id="i-info" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5"/></g></symbol>
+      <symbol id="i-chat" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" d="M4.5 5.5h15a1 1 0 0 1 1 1v9.5a1 1 0 0 1-1 1H10l-4.5 3.5V17H4.5a1 1 0 0 1-1-1V6.5a1 1 0 0 1 1-1Z"/><path fill="currentColor" d="M8 11.25a1.25 1.25 0 1 0 0-.01zM12 11.25a1.25 1.25 0 1 0 0-.01zM16 11.25a1.25 1.25 0 1 0 0-.01z"/></symbol>
+      <symbol id="i-spark" viewBox="0 0 24 24"><path fill="currentColor" d="M12 2.5l2.1 5.6 5.6 2.1-5.6 2.1L12 17.9l-2.1-5.6-5.6-2.1 5.6-2.1zM18.5 15l.9 2.4 2.4.9-2.4.9-.9 2.4-.9-2.4-2.4-.9 2.4-.9z"/></symbol>
+      <symbol id="i-scan" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 8V5.5A1.5 1.5 0 0 1 5.5 4H8M16 4h2.5A1.5 1.5 0 0 1 20 5.5V8M20 16v2.5a1.5 1.5 0 0 1-1.5 1.5H16M8 20H5.5A1.5 1.5 0 0 1 4 18.5V16"/><circle cx="11.5" cy="11.5" r="3.5"/><path d="m14 14 2.5 2.5"/></g></symbol>
+      <symbol id="i-bug" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="7.5" width="10" height="12" rx="5"/><path d="M9.5 7.5a2.5 2.5 0 0 1 5 0M12 11v8.5M3.5 13H7M17 13h3.5M4.5 8.5 7.3 10M19.5 8.5 16.7 10M4.5 18.5l2.9-1.6M19.5 18.5l-2.9-1.6"/></g></symbol>
+      <symbol id="i-trash" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M4.5 7h15M9.5 7V4.5h5V7M6.5 7l1 12.5h9l1-12.5M10 10.5v6M14 10.5v6"/></symbol>
+      <symbol id="i-send" viewBox="0 0 24 24"><path fill="currentColor" d="M3.4 20.4 21 12 3.4 3.6l-.01 6.53L15 12 3.39 13.87z"/></symbol>
+      <symbol id="i-download" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M12 4v11m0 0-4-4m4 4 4-4M5 19.5h14"/></symbol>
+      <symbol id="i-folder" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" d="M3.5 6.5a1 1 0 0 1 1-1h4.6l2 2h8.4a1 1 0 0 1 1 1v9.5a1 1 0 0 1-1 1h-15a1 1 0 0 1-1-1z"/></symbol>
       <symbol id="i-sliders" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M4 7h10M18 7h2M4 17h4M12 17h8M14 4.5v5M8 14.5v5"/></symbol>
       <symbol id="s-jira" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M6 3.5h12v17H6zM9 8h6M9 12h6M9 16h3.5"/></symbol>
       <symbol id="s-understand" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M12 3.5a8.5 8.5 0 1 0 0 17 8.5 8.5 0 0 0 0-17Zm0 4V12l3 2"/></symbol>
@@ -361,8 +418,10 @@
     </defs>
   </svg>
   <script src="/static/i18n.js"></script>
+  <script src="/static/i18n-ko.js"></script>
   <script src="/static/markdown.js"></script>
   <script src="/static/about.js"></script>
   <script src="/static/app.js"></script>
+  <script src="/static/assistant.js"></script>
 </body>
 </html>

@@ -81,6 +81,46 @@
       ],
       author: 'Author',
     },
+    ko: {
+      title: '시스템 작동 방식',
+      intro: 'Ticket Analyzer는 전부 이 PC(localhost)에서 실행됩니다. Jira 티켓을 가져오고, 로그와 소스 코드에서 근거를 모아 AI가 분석한 뒤 보고서를 Collab에 게시합니다. 처리 모드가 누가 결정할지를 정합니다: 자동(AI가 결정, 불가능한 단계는 건너뜀), 검토(AI가 제안, 사용자가 확인), 수동(사용자가 선택). 보고서는 화면 언어(한국어/English/Tiếng Việt)로 작성됩니다.',
+      flow: '8단계 흐름',
+      arch: '아키텍처',
+      data: '데이터 위치',
+      legend: { mcp: 'Jira / Collab (MCP)', ai: 'AI (M365 또는 Copilot CLI)', log: 'LogSleuth', code: 'CodeGraph', local: '로컬 처리' },
+      steps: [
+        ['Jira 티켓', '티켓 + 첨부 파일 목록', 'mcp'],
+        ['AI 티켓 이해', '티켓에서 사고 시각과 시간대를 찾고, 받을 만한 첨부 파일을 고름', 'ai'],
+        ['로그 브리프', '티켓 시각을 로그 시각에 맞춘 뒤 자름(시간대가 없으면 검토/수동 모드에서 선택 요청), 시각이 없으면 전체 스캔', 'log'],
+        ['코드 그래프', '함수/클래스 지도(Python, C/C++, Java, Kotlin, JS/TS), 티켓 관련 심볼 우선', 'code'],
+        ['AI 분석', '모든 근거를 종합하고 관련 코드 위치와 수정 방향 제시', 'ai'],
+        ['AI 서식화', 'Confluence 보고서 + 자동 서식 복구', 'ai'],
+        ['AI 인포그래픽', 'M365 이미지(실패 시 로컬 SVG), Copilot CLI는 항상 SVG. 이미지가 없어도 게시는 막히지 않음', 'ai'],
+        ['Collab 게시', '페이지를 만들거나 기존 페이지를 업데이트', 'mcp'],
+      ],
+      optional: '선택',
+      you: ['사용자', '브라우저', ['티켓 입력, 로그 / 소스 선택', '각 단계를 실시간으로 확인', '게시 전 검토 및 편집', 'AI 어시스턴트(오른쪽 아래)에게 질문']],
+      server: ['로컬 서버', '127.0.0.1:6969 · Python', [
+        ['파이프라인', '8단계 실행, 어느 단계든 중지 / 재실행'],
+        ['Setup Doctor', '없는 것만 점검하고 설치'],
+        ['저장소', '실행마다 결과 폴더 하나'],
+      ]],
+      links: { ui: 'HTTP + SSE (실시간 진행)', mcp: 'stdio JSON-RPC · uvx mcp-atlassian', m365: 'Playwright → Chromium', cli: 'copilot -p (읽기 전용)', tools: '로컬 실행' },
+      ext: [
+        ['mcp', 'Jira & Collab', 'jira.lge.com · collab.lge.com', ['티켓 가져오기, 첨부 파일 다운로드', '보고서 페이지 생성 / 업데이트']],
+        ['ai', 'AI', '두 모드 중 선택', ['M365 Copilot 웹 (기본 GPT 6 Luna)', 'GitHub Copilot CLI']],
+        ['log', 'LogSleuth', 'Node.js', ['선택한 소스 폴더로 카탈로그 생성', '티켓 시각이 있으면 시간으로 필터링, 없으면 시간 필터 없음']],
+        ['code', 'CodeGraph', 'Python', ['별도 체크박스로 켜고 끔', '대화형 지도 + AI용 요약 보기']],
+      ],
+      facts: [
+        ['Jira/Collab 토큰', '이 PC(data/config/mcp.json)에만 저장되며 브라우저로 보내지지 않습니다.'],
+        ['실행별 결과', 'data/runs/<ISSUE>-<시각>/ : 티켓, 로그 브리프, 분석, 보고서, 로그.'],
+        ['첨부 파일', 'Downloads\\TicketAnalyzer\\<ISSUE> (또는 선택한 폴더). 압축 파일은 그 자리에서 해제됩니다.'],
+        ['외부로 나가는 것', 'Jira/Collab(MCP)과 선택한 AI 서비스뿐입니다. 보고서 미리 보기는 오프라인입니다.'],
+        ['로컬 버그 티켓', 'AI 어시스턴트가 만든 도구 결함 티켓은 data/bugs/ 에 Markdown으로 저장됩니다.'],
+      ],
+      author: '제작',
+    },
   };
 
   const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));

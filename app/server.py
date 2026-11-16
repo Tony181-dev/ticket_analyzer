@@ -13,10 +13,15 @@
   POST /api/runs/<id>/start    -> {from?, only?, until?, resume?, publish?}
   POST /api/runs/<id>/inputs   -> any of the create options, to change them on an existing run
   POST /api/runs/<id>/gate     -> answer the evidence gate {names[], time_start?, time_end?, shift_minutes?, skip_logs?, folder?}
+  POST /api/runs/<id>/timezone -> answer the time-zone question {mode: auto|suggested|manual|bypass, shift_minutes?,
+                                  time_start?, time_end?, ticket_utc_offset?}
   POST /api/runs/<id>/attachments -> download {names[], folder?} without running the pipeline
   GET  /api/runs/<id>/files/<name>  PUT same -> raw artifact / save edit
   POST /api/runs/<id>/graph-query {q}   POST /api/runs/<id>/open-folder
   POST /api/stop
+  GET  /api/assistant          -> chat messages, busy, local bug tickets
+  POST /api/assistant/ask {text?, run_id?, kind: chat|scan, reason?, trigger?}   POST /api/assistant/stop | /clear
+  POST /api/assistant/action {message_id, index}   POST /api/assistant/open-bugs
 
 Automation: docs/automation.md (this API and the `python -m app run` command line).
 """
@@ -31,7 +36,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlparse
 
-from . import attachments, doctor, events, explorer, mcp, paths, picker, pipeline, settings
+from . import assistant, attachments, doctor, events, explorer, mcp, paths, picker, pipeline, settings
 from .ai import copilot
 from .ai.m365 import worker as m365_worker
 from .evidence import graph as codegraph
@@ -49,6 +54,7 @@ def _background(fn, *args):
         try:
             fn(*args)
         except Exception as exc:
+            assistant.record_error(getattr(fn, "__name__", "background"), exc)
             events.publish("doctor_log", line=f"✗ {exc}")
         finally:
             events.publish("doctor_changed")
@@ -131,6 +137,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, doctor.checks())
             if p == "/api/logsleuth/catalogs":
                 return self._send(200, {"catalogs": logsleuth.list_catalogs()})
+            if p == "/api/assistant":
+                return self._send(200, assistant.state())
             m = re.fullmatch(r"/api/runs/([^/]+)", p)
             if m:
                 run = pipeline.get(m.group(1))
@@ -140,6 +148,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._file(pipeline.read_file(m.group(1), m.group(2)))
             self._send(404, {"error": "not found"})
         except Exception as exc:
+            assistant.record_error("GET " + p, exc)
             self._send(500, {"error": str(exc)})
 
     def do_PUT(self):
@@ -200,6 +209,21 @@ class Handler(BaseHTTPRequestHandler):
             if p == "/api/stop":
                 pipeline.executor.stop()
                 return self._send(200, {"ok": True})
+            if p == "/api/assistant/ask":
+                return self._send(200, assistant.ask(body.get("text"), body.get("run_id"), body.get("kind") or "chat",
+                                                     body.get("reason") or "", body.get("trigger")))
+            if p == "/api/assistant/action":
+                return self._send(200, assistant.run_action(body.get("message_id"), body.get("index"), _open_folder))
+            if p == "/api/assistant/stop":
+                assistant.stop()
+                return self._send(200, {"ok": True})
+            if p == "/api/assistant/clear":
+                assistant.clear()
+                return self._send(200, {"ok": True})
+            if p == "/api/assistant/open-bugs":
+                assistant.BUGS.mkdir(parents=True, exist_ok=True)
+                _open_folder(assistant.BUGS)
+                return self._send(200, {"ok": True})
             if p == "/api/runs/clear":
                 keep = pipeline.executor.run_id if pipeline.executor.busy else None
                 removed = pipeline.clear_runs(keep)
@@ -217,7 +241,7 @@ class Handler(BaseHTTPRequestHandler):
                 if body.get("start", True):
                     pipeline.executor.start(run["id"], until=body.get("until"))
                 return self._send(200, run)
-            m = re.fullmatch(r"/api/runs/([^/]+)/(start|inputs|gate|log-scan|graph-query|open-folder|attachments)", p)
+            m = re.fullmatch(r"/api/runs/([^/]+)/(start|inputs|gate|timezone|log-scan|graph-query|open-folder|attachments)", p)
             if m:
                 run_id, action = m.groups()
                 if action == "start":
@@ -236,6 +260,11 @@ class Handler(BaseHTTPRequestHandler):
                         run_id, body.get("names") or [], body.get("folder"), body.get("time_start"), body.get("time_end"),
                         body["shift_minutes"] if "shift_minutes" in body else ..., bool(body.get("skip_logs")))
                     return self._send(202, {"ok": True})
+                if action == "timezone":
+                    pipeline.executor.resolve_timezone(run_id, body.get("mode"), body.get("shift_minutes"),
+                                                       body.get("time_start"), body.get("time_end"),
+                                                       body.get("ticket_utc_offset"))
+                    return self._send(202, {"ok": True})
                 if action == "log-scan":
                     pipeline.executor.start(run_id, "log", only=True, catalog_only=True)
                     return self._send(202, {"ok": True})
@@ -253,6 +282,8 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(200, {"ok": True})
             self._send(404, {"error": "not found"})
         except Exception as exc:
+            if not p.startswith("/api/assistant"):  # the chat shows its own errors
+                assistant.record_error("POST " + p, exc)
             self._send(400, {"error": str(exc)})
 
     def _events(self):

@@ -59,6 +59,8 @@ async function boot() {
   S.state = await api('/api/state');
   I18N.set(S.state.settings.lang);
   S.draft = freshDraft();
+  $('#copilotModels').innerHTML = ((S.state.models || {}).copilot || [])
+    .map((m) => `<option value="${esc(m)}"></option>`).join('');
   renderMode();
   renderHistory();
   renderAll();
@@ -89,8 +91,11 @@ function connect() {
     } else if (m.type === 'runs_cleared') {
       if (S.run && S.run.id !== m.keep) $('#newRun').click();
       scheduleHistory();
+    } else if (m.type.startsWith('assistant')) {
+      if (window.Assistant) Assistant.onEvent(m);
     } else if (m.type === 'settings') {
       S.state.settings = m.settings; renderMode();
+      if (window.Assistant) Assistant.sync();
       if (!S.run) {
         S.draft = { ...freshDraft(), log_files: S.draft.log_files, source_dir: S.draft.source_dir };
         renderInputs();
@@ -232,7 +237,7 @@ function renderHistory() {
   const ul = $('#runList');
   const runs = S.state.runs || [];
   if (!runs.length) { ul.innerHTML = `<li class="muted small" style="padding:6px 10px">${esc(t('history.empty'))}</li>`; return; }
-  const locale = I18N.lang === 'en' ? 'en-GB' : 'vi-VN';
+  const locale = I18N.locale;
   ul.innerHTML = runs.map((r) => {
     const when = new Date(r.created * 1000).toLocaleString(locale, { hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit' });
     const tag = r.collab && r.collab.page_id ? '<span class="tag ok">Collab</span>'
@@ -365,7 +370,7 @@ function resumable() {
   if (!S.run || S.state.busy || S.preview) return false;
   const statuses = Object.values(S.run.steps).map((st) => st.status);
   if (!statuses.some((x) => x === 'done')) return false;
-  if (S.run.pending_gate) return false; // the gate panel is the way forward, not a blind re-run
+  if (S.run.pending_gate || S.run.pending_tz) return false; // the gate / time-zone panel is the way forward
   return statuses.some((x) => ['idle', 'stale', 'error'].includes(x))
     || (S.run.steps.log.status === 'waiting');
 }
@@ -591,8 +596,8 @@ function renderFlow() {
       ? '<span class="gear"><svg><use href="#i-gear"/></svg></span><span class="gear small"><svg><use href="#i-gear"/></svg></span>' : '';
     const publish = s.id === 'collab' && status === 'waiting'
       ? `<button class="btn btn-primary btn-sm publish-btn" data-publish>${esc(t('publish'))}</button>`
-      : s.id === 'log' && status === 'waiting' && S.run && S.run.pending_gate && !S.state.busy
-        ? `<button class="btn btn-primary btn-sm publish-btn" data-gate-open>${esc(t('gate.open'))}</button>` : '';
+      : s.id === 'log' && status === 'waiting' && S.run && (S.run.pending_gate || S.run.pending_tz) && !S.state.busy
+        ? `<button class="btn btn-primary btn-sm publish-btn" data-gate-open>${esc(t(S.run.pending_gate ? 'gate.open' : 'tz.open'))}</button>` : '';
     return `<li class="node s-${status} ${r.kind ? 'is-' + r.kind : ''} ${S.selected === s.id ? 'selected' : ''}" data-step="${s.id}" tabindex="0">
       <div class="node-top">
         <div class="node-icon"><svg><use href="#s-${s.id}"/></svg>${gear}</div>
@@ -643,11 +648,12 @@ function renderAll() {
   renderUsagePanel();
   maybePromptGate();
   renderAttProgress();
+  if (window.Assistant) Assistant.sync();
 }
 
 function formatCount(value) {
   const count = Math.max(0, Math.round(Number(value) || 0));
-  return new Intl.NumberFormat(I18N.lang === 'en' ? 'en-US' : 'vi-VN').format(count);
+  return new Intl.NumberFormat(I18N.locale).format(count);
 }
 
 function renderUsagePanel() {
@@ -812,7 +818,7 @@ function renderDrawer(reloadViewer) {
 function renderExtra(step, st) {
   const box = $('#drawerExtra');
   box.classList.toggle('logsleuth-extra', step === 'log');
-  if (step === 'log' && box.querySelector('#lsForm, .gate-panel') && box.contains(document.activeElement) && !S.state.busy) return;
+  if (step === 'log' && box.querySelector('#lsForm, .gate-panel, .tz-panel') && box.contains(document.activeElement) && !S.state.busy) return;
   let html = st.error ? `<div class="err-box" style="margin:0 0 10px">${esc(st.error)}</div>` : '';
   if (step === 'jira') {
     html += attachmentsPanel();
@@ -857,6 +863,7 @@ function renderExtra(step, st) {
   if ($('#pubNow')) $('#pubNow').onclick = guard(() => startStep('collab', true, true));
   if (step === 'jira') bindAttachments();
   if (step === 'log' && $('#gateRun')) bindGatePanel();
+  else if (step === 'log' && $('#tzRun')) bindTzPanel();
   else if (step === 'log' && $('#lsForm')) bindLogPanel();
 }
 
@@ -922,9 +929,129 @@ function bindGatePanel() {
   $('#gateSkipLogs').onclick = answer({ skip_logs: true });
 }
 
+// Time zone of the ticket's incident time (Review / Manual, when the ticket states none): pick a suggested
+// alignment, set the zones yourself, or drop the time filter. Previews are checked against each log's range.
+const TZ_OFFSETS = [-720, -660, -600, -570, -540, -480, -420, -360, -300, -240, -210, -180, -120, -60, 0, 60, 120, 180,
+  210, 240, 270, 300, 330, 345, 360, 390, 420, 480, 525, 540, 570, 600, 630, 660, 720, 765, 780, 840];
+const fmtOffset = (m) => `${m < 0 ? '-' : '+'}${String(Math.floor(Math.abs(m) / 60)).padStart(2, '0')}:${String(Math.abs(m) % 60).padStart(2, '0')}`;
+const fmtShift = (m) => (m === 0 ? '0' : `${m > 0 ? '+' : '−'}${Math.abs(m) % 60 ? (Math.abs(m) / 60).toFixed(2).replace(/0+$/, '') : Math.abs(m) / 60}h`);
+const DAY_MS = 86400000;
+function clockMs(c) {
+  const m = /^(\d{1,2}):(\d{2})(?::(\d{2})(?:[.,](\d{1,3}))?)?$/.exec(String(c || '').trim());
+  if (!m || +m[1] > 23 || +m[2] > 59 || +(m[3] || 0) > 59) return null;
+  return ((+m[1] * 60 + +m[2]) * 60 + +(m[3] || 0)) * 1000 + +String(m[4] || '0').padEnd(3, '0').slice(0, 3);
+}
+function shiftClock(c, minutes) {
+  const ms = clockMs(c);
+  if (ms == null) return null;
+  const v = (((ms + minutes * 60000) % DAY_MS) + DAY_MS) % DAY_MS;
+  const sec = Math.floor(v / 1000);
+  return [Math.floor(sec / 3600), Math.floor(sec / 60) % 60, sec % 60].map((x) => String(x).padStart(2, '0')).join(':');
+}
+function windowCovered(spans, start, end) {  // mirrors timealign.window_covered
+  let a = clockMs(start), b = clockMs(end);
+  if (a == null && b == null) return null;
+  if (a == null) a = b;
+  if (b == null) b = a;
+  const seg = (x, y) => (x <= y ? [[x, y]] : [[x, DAY_MS], [0, y]]);
+  let known = false;
+  for (const sp of spans || []) {
+    const f = clockMs(sp.first), l = clockMs(sp.last);
+    if (f == null || l == null) continue;
+    known = true;
+    if (sp.wraps) return true;
+    for (const [x1, x2] of seg(a, b)) for (const [y1, y2] of seg(f, l)) if (x1 <= y2 && y1 <= x2) return true;
+  }
+  return known ? false : null;
+}
+const coverTag = (c) => (c === true ? `<span class="tag ok">${esc(t('tz.inside'))}</span>`
+  : c === false ? `<span class="tag bad">${esc(t('tz.outside'))}</span>` : `<span class="tag">${esc(t('tz.unknownRange'))}</span>`);
+
+function tzCandidates() {
+  const z = S.run.pending_tz, sug = z.suggested || {};
+  const list = (z.candidates || []).map((c) => ({ ...c }));
+  if (sug.shift_minutes != null && !list.some((c) => c.shift_minutes === sug.shift_minutes)) list.push({ ...sug });
+  return list;
+}
+
+function offsetMinutes(text) {
+  const m = /^([+-])(\d{2}):(\d{2})$/.exec(text || '');
+  return m ? (m[1] === '-' ? -1 : 1) * (+m[2] * 60 + +m[3]) : null;
+}
+
+function tzPanel() {
+  const z = S.run.pending_tz, sug = z.suggested || {};
+  const spans = (z.spans || []).map((sp) => `<tr><td>${esc(sp.name)}</td><td>${esc(sp.first_ts || '—')}</td><td>${esc(sp.last_ts || '—')}</td></tr>`).join('');
+  const cands = tzCandidates().map((c, i) => `
+    <label class="tz-row"><input type="radio" name="tzPick" value="${i}" ${c.shift_minutes === sug.shift_minutes ? 'checked' : ''}>
+      <span><b>${esc(t('tz.shiftLabel', { s: fmtShift(c.shift_minutes) }))}</b> · ${esc(t('tz.src.' + c.source))}
+        ${c.shift_minutes === sug.shift_minutes ? `<span class="tag accent">${esc(t('tz.suggested'))}</span>` : ''}
+        <span class="muted small tz-line">${esc(t('tz.window'))}: <code>${esc(c.time_start || '…')} → ${esc(c.time_end || '…')}</code> ${coverTag(c.covered)}</span>
+        ${c.shift_minutes === sug.shift_minutes && sug.source === 'ai' && sug.reason ? `<span class="muted small tz-line">${esc(sug.reason)}</span>` : ''}</span></label>`).join('');
+  const local = -new Date().getTimezoneOffset();
+  const jira = offsetMinutes(z.jira_offset);
+  const ticketDefault = jira != null && TZ_OFFSETS.includes(jira) ? jira : (TZ_OFFSETS.includes(local) ? local : 0);
+  const opts = (sel) => TZ_OFFSETS.map((m) => `<option value="${m}" ${m === sel ? 'selected' : ''}>UTC${fmtOffset(m)}${m === jira ? ' · Jira' : ''}${m === local ? ' · ' + t('tz.yourPc') : ''}</option>`).join('');
+  return `<div class="ls-panel tz-panel">
+    <div class="warn-box">${esc(t('tz.intro', { start: z.ticket_start || '…', end: z.ticket_end || '…' }))}${z.incident_date ? ` (${esc(z.incident_date)})` : ''}</div>
+    ${spans ? `<p class="muted small" style="margin:10px 0 4px">${esc(t('tz.logRanges'))}</p>
+      <div class="tz-spans"><table><thead><tr><th>${esc(t('tz.file'))}</th><th>${esc(t('tz.first'))}</th><th>${esc(t('tz.last'))}</th></tr></thead><tbody>${spans}</tbody></table></div>` : ''}
+    <fieldset class="tz-group"><legend>${esc(t('tz.optSuggested'))}</legend>${cands || `<p class="muted small">${esc(t('tz.noCandidates'))}</p>`}</fieldset>
+    <fieldset class="tz-group"><legend><label class="tz-row inline"><input type="radio" name="tzPick" value="manual"> ${esc(t('tz.optManual'))}</label></legend>
+      <div class="ls-grid tz-manual">
+        <div class="field"><label for="tzTicket">${esc(t('tz.ticketZone'))}</label><select id="tzTicket">${opts(ticketDefault)}</select></div>
+        <div class="field"><label for="tzLog">${esc(t('tz.logZone'))}</label><select id="tzLog">${opts(ticketDefault)}</select></div>
+        <div class="field"><label for="tzStart">${esc(t('tz.from'))}</label><input id="tzStart" placeholder="HH:MM:SS" value="${esc(z.ticket_start || '')}"></div>
+        <div class="field"><label for="tzEnd">${esc(t('tz.to'))}</label><input id="tzEnd" placeholder="HH:MM:SS" value="${esc(z.ticket_end || '')}"></div>
+      </div>
+      <p class="muted small" id="tzPreview"></p></fieldset>
+    <label class="tz-row tz-bypass"><input type="radio" name="tzPick" value="bypass"> <span><b>${esc(t('tz.optBypass'))}</b>
+      <span class="muted small tz-line">${esc(t('tz.bypassHelp'))}</span></span></label>
+    <div class="ls-actions">
+      <button type="button" class="btn btn-primary" id="tzRun">${esc(t('tz.apply'))}</button>
+      <button type="button" class="btn" id="tzAsk">${esc(t('tz.askAi'))}</button>
+    </div></div>`;
+}
+
+function bindTzPanel() {
+  const z = S.run.pending_tz;
+  const picked = () => (document.querySelector('[name="tzPick"]:checked') || {}).value;
+  const manual = () => {
+    const ticket = Number($('#tzTicket').value), log = Number($('#tzLog').value);
+    return { ticket, shift: log - ticket, start: $('#tzStart').value.trim(), end: $('#tzEnd').value.trim() };
+  };
+  const preview = () => {
+    const m = manual();
+    const a = shiftClock(m.start, m.shift), b = shiftClock(m.end, m.shift);
+    $('#tzPreview').innerHTML = `${esc(t('tz.shiftLabel', { s: fmtShift(m.shift) }))} · ${esc(t('tz.window'))}: <code>${esc(a || '…')} → ${esc(b || '…')}</code> ${coverTag(windowCovered(z.spans, a, b))}`;
+    $('.tz-manual').classList.toggle('dim', picked() !== 'manual');
+  };
+  for (const el of document.querySelectorAll('.tz-manual select, .tz-manual input')) {
+    el.addEventListener('input', () => { document.querySelector('[name="tzPick"][value="manual"]').checked = true; preview(); });
+  }
+  for (const r of document.querySelectorAll('[name="tzPick"]')) r.addEventListener('change', preview);
+  preview();
+  $('#tzRun').onclick = guard(async () => {
+    const choice = picked();
+    let body;
+    if (choice === 'bypass') body = { mode: 'bypass' };
+    else if (choice === 'manual') {
+      const m = manual();
+      body = { mode: 'manual', shift_minutes: m.shift, ticket_utc_offset: fmtOffset(m.ticket), time_start: m.start, time_end: m.end };
+    } else if (choice != null) body = { mode: 'suggested', shift_minutes: tzCandidates()[Number(choice)].shift_minutes };
+    else throw new Error(t('tz.pickOne'));
+    await api(`/api/runs/${encodeURIComponent(S.run.id)}/timezone`, { body });
+    S.state.busy = true;
+    closeDrawer();
+    renderButtons();
+  });
+  $('#tzAsk').onclick = guard(async () => { if (window.Assistant) await Assistant.ask(t('asst.q.tz')); });
+}
+
 // LogSleuth: the original Scan -> catalog/service selection -> Slice workflow.
 function logPanel() {
   if (S.run && S.run.pending_gate && S.run.steps.log.status === 'waiting') return gatePanel();
+  if (S.run && S.run.pending_tz && S.run.steps.log.status === 'waiting') return tzPanel();
   const o = logOptions(), manual = o.mode === 'manual', busy = !!S.state.busy;
   if (!manual) {
     const files = inputs().log_files || [];
@@ -1094,9 +1221,9 @@ function updateAttSelection() {
 
 // Pause point of the pipeline: the evidence gate at the Log step (Review / Manual).
 function maybePromptGate() {
-  const pending = S.run && S.run.pending_gate;
+  const pending = S.run && (S.run.pending_gate || S.run.pending_tz);
   if (!pending || S.state.busy || S.preview) return;
-  const key = `${S.run.id}:${S.run.steps.log.ended}:${pending.problem || ''}`;
+  const key = `${S.run.id}:${S.run.steps.log.ended}:${pending.problem || (S.run.pending_tz ? 'tz' : '')}`;
   if (S.gatePrompted === key) return;
   S.gatePrompted = key;
   openDrawer('log');
@@ -1139,10 +1266,23 @@ function renderAttProgress() {
       + (p.pct != null ? ` ${p.pct}%` : '');
     $('#attProgressName').textContent = p.name || '';
     $('#attProgressBar').style.width = `${Math.max(pct, 3)}%`;
+    renderAttFiles(p.files || []);
   } else if (S.attWorking) {
     S.attWorking = false;
     $('#attProgModal').hidden = true;
   }
+}
+// One bar per file: queued -> downloading (percent) -> downloaded / already present / failed -> extracting -> ready.
+function renderAttFiles(files) {
+  const width = (f) => (['done', 'present', 'ready', 'extract'].includes(f.state) ? 100 : f.state === 'download' ? Math.max(f.pct || 0, 2) : 0);
+  $('#attProgressFiles').innerHTML = files.map((f) => {
+    const pct = f.state === 'download' ? `${f.pct || 0}%` : '';
+    return `<li class="att-file s-${esc(f.state)}">
+      <div class="att-file-top"><span class="att-file-name" title="${esc(f.name)}">${esc(f.name)}</span>
+        <span class="muted small">${f.size ? fmtSize(f.size) : ''}</span>
+        <span class="att-file-state">${esc(t('att.st.' + f.state))}${pct ? ' · ' + pct : ''}</span></div>
+      <div class="att-bar-track"><div class="att-bar-fill" style="width:${width(f)}%"></div></div></li>`;
+  }).join('');
 }
 $('#attSkip').onclick = () => closeModals();
 

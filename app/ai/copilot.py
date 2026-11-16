@@ -16,8 +16,10 @@ from ..mcp import child_env
 from . import stopflag
 
 PACKAGE = "@github/copilot"
-_lock = threading.Lock()
-_current = {"proc": None}
+# One process slot per caller: the pipeline and the assistant chat each run one CLI process at a time,
+# side by side, and stopping one never kills the other.
+_slots_lock = threading.Lock()
+_slots = {}
 _USAGE_FIELDS = {
     "input_tokens": "inputTokens",
     "output_tokens": "outputTokens",
@@ -79,16 +81,22 @@ def _notify_usage(on_usage, usage):
         pass  # Accounting must never make an otherwise successful AI call fail.
 
 
-def _execute(args, cwd, timeout, cancellable):
-    with _lock:
+def _slot(name):
+    with _slots_lock:
+        return _slots.setdefault(name, {"lock": threading.Lock(), "proc": None})
+
+
+def _execute(args, cwd, timeout, cancellable, slot="pipeline"):
+    state = _slot(slot)
+    with state["lock"]:
         if cancellable and stopflag.requested.is_set():
             raise CopilotError("Cancelled")
         proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
                                 cwd=str(cwd), env=child_env({"NO_COLOR": "1"}),
                                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-        _current["proc"] = proc
+        state["proc"] = proc
         if cancellable and stopflag.requested.is_set():  # Stop landed between the check and the launch
-            cancel()
+            cancel(slot)
         timed_out = False
         try:
             out, err = proc.communicate(timeout=timeout)
@@ -97,14 +105,31 @@ def _execute(args, cwd, timeout, cancellable):
             timed_out = True
             out, err = exc.output or b"", exc.stderr or b""
         finally:
-            _current["proc"] = None
+            state["proc"] = None
     return proc, out, err, timed_out
 
 
-def _unsupported_json_output(detail):
+def _unsupported(detail, option):
     message = str(detail or "").lower()
-    return "--output-format" in message and any(
+    return option in message and any(
         text in message for text in ("unknown option", "unrecognized option", "unknown argument"))
+
+
+def _unsupported_json_output(detail):
+    return _unsupported(detail, "--output-format")
+
+
+def _without(args, option):
+    """`args` minus every `option VALUE` pair."""
+    out, skip = [], False
+    for arg in args:
+        if skip:
+            skip = False
+        elif arg == option:
+            skip = True
+        else:
+            out.append(arg)
+    return out
 
 
 class CopilotError(RuntimeError):
@@ -155,30 +180,35 @@ def version():
         return None
 
 
-def ask(prompt, cwd, model="", timeout=900, cancellable=False, effort=None, context=None, on_usage=None):
+def ask(prompt, cwd, model="", timeout=900, cancellable=False, effort=None, context=None, on_usage=None,
+        extra_dirs=(), slot="pipeline"):
+    """Run one read-only prompt. `extra_dirs` are readable besides `cwd` (`--add-dir`); `slot` names the
+    process slot (see _slots) so independent callers do not queue behind each other."""
     cmd = command()
     if not cmd:
         raise CopilotError("Copilot CLI is not installed. Open Setup.")
     args = [*cmd, "-p", prompt, "--output-format", "json", "-s", "--no-auto-update", "--stream", "off",
             "--allow-all-tools", "--deny-tool", "shell", "--deny-tool", "write",
             "--disable-builtin-mcps", "-C", str(cwd)]
+    for folder in dict.fromkeys(str(d) for d in extra_dirs or () if d):
+        args += ["--add-dir", folder]
     if model:
         args += ["--model", model]
     if context:
         args += ["--context", context]
     if effort:
         args += ["--effort", effort]
-    proc, out, err, timed_out = _execute(args, cwd, timeout, cancellable)
-    raw = (out or b"").decode("utf-8", "replace")
-    text, usage = _parse_output(raw)
-    detail = err.decode("utf-8", "replace").strip() or text or raw.strip()
-    if not timed_out and proc.returncode != 0 and _unsupported_json_output(detail):
-        fallback_args = args[:]
-        option = fallback_args.index("--output-format")
-        del fallback_args[option:option + 2]
-        proc, out, err, timed_out = _execute(fallback_args, cwd, timeout, cancellable)
+    for _ in range(3):  # an older CLI may lack an optional flag: drop it and try again
+        proc, out, err, timed_out = _execute(args, cwd, timeout, cancellable, slot)
         raw = (out or b"").decode("utf-8", "replace")
         text, usage = _parse_output(raw)
+        detail = err.decode("utf-8", "replace").strip() or text or raw.strip()
+        if timed_out or proc.returncode == 0:
+            break
+        option = next((o for o in ("--output-format", "--add-dir") if o in args and _unsupported(detail, o)), None)
+        if not option:
+            break
+        args = _without(args, option)
     _notify_usage(on_usage, usage)
     if timed_out:
         raise CopilotError(f"Copilot CLI timed out after {timeout}s")
@@ -194,8 +224,8 @@ def ask(prompt, cwd, model="", timeout=900, cancellable=False, effort=None, cont
     return text
 
 
-def cancel():
-    proc = _current.get("proc")
+def cancel(slot="pipeline"):
+    proc = _slot(slot).get("proc")
     if proc and proc.poll() is None:
         try:
             if hasattr(subprocess, "CREATE_NO_WINDOW"):

@@ -1,8 +1,10 @@
-"""Server-side messages in Vietnamese and English (settings["lang"]).
+"""Server-side messages in Vietnamese, English and Korean (settings["lang"]).
 
+MESSAGES holds (vi, en) pairs; Korean lives in i18n_ko.KO and falls back to English.
 Notes already stored in a run keep the language they were written in.
 """
 from . import settings
+from .i18n_ko import KO
 
 MESSAGES = {
     # pipeline: steps / errors / notes / log lines
@@ -22,6 +24,63 @@ MESSAGES = {
     "infographic.actions": ("HÀNH ĐỘNG ĐỀ XUẤT", "RECOMMENDED ACTIONS"),
     "infographic.not_stated": ("Không nêu trong phân tích", "Not stated in the analysis"),
     "infographic.no_items": ("Không có dữ liệu được nêu.", "No details were stated."),
+    "note.tz_wait": ("Chờ bạn chọn múi giờ để căn giờ log", "Waiting for you to pick the time zone for the log clock"),
+    "note.tz_unknown": ("⚠ múi giờ chưa rõ", "⚠ time zone not stated"),
+    "log.tz_wait": ("Ticket không nêu múi giờ của giờ sự cố — chọn cách căn giờ log (gợi ý / tự nhập / bỏ lọc giờ) rồi chạy tiếp",
+                    "The ticket states no time zone for the incident time — choose the log clock alignment (suggested / your own / no time filter) to continue"),
+    "log.tz_auto_unknown": ("Ticket không nêu múi giờ: giờ log được căn tự động, nên kiểm tra lại 03-log-span.md",
+                            "The ticket states no time zone: the log clock was aligned automatically — check 03-log-span.md"),
+    "log.tz_decided": ("Múi giờ: {how}", "Time zone: {how}"),
+    "log.tz_bypass": ("Bỏ lọc theo giờ theo lựa chọn của bạn — dùng toàn bộ khoảng giờ của log", "Time filter dropped as you chose — the full log range is used"),
+    "err.tz_mode": ("Cách xử lý múi giờ không hợp lệ", "Unknown time-zone choice"),
+    "err.tz_shift": ("Cần độ lệch giờ log (phút)", "A log clock shift (minutes) is required"),
+    "err.tz_offset": ("Múi giờ phải dạng +07:00 / -05:00", "The time zone must look like +07:00 / -05:00"),
+    "log.report_lang": ("Report được viết bằng {was}, giao diện đang là {now} — chạy lại từ bước AI phân tích để có report đúng ngôn ngữ",
+                        "The report was written in {was} but the UI is now {now} — re-run from AI analysis to get it in that language"),
+    "tz.auto": ("để hệ thống tự căn", "let the app align"),
+    "tz.suggested": ("theo gợi ý", "suggested alignment"),
+    "tz.manual": ("tự nhập", "set by you"),
+    "tz.bypass": ("bỏ lọc theo giờ", "no time filter"),
+    "asst.busy":("Trợ lý đang trả lời câu trước, chờ chút hoặc bấm Dừng", "The assistant is still answering; wait or press Stop"),
+    "asst.empty": ("Hãy nhập câu hỏi", "Type a question first"),
+    "asst.stopped": ("Đã dừng", "Stopped"),
+    "asst.no_text": ("(Trợ lý không trả lời bằng văn bản)", "(The assistant returned no text)"),
+    "asst.no_action": ("Không tìm thấy hành động này", "This action no longer exists"),
+    "asst.done_already": ("Hành động này đã được thực hiện", "This action was already done"),
+    "asst.gate_gone": ("Bước chọn bằng chứng không còn chờ nữa", "The evidence gate is no longer waiting"),
+    "asst.need_run": ("Cần mở một ticket trước", "Open a ticket first"),
+    "asst.auto_gate": ("🔔 {issue}: đang chờ chọn bằng chứng — tự quét gợi ý", "🔔 {issue}: evidence gate is waiting — auto-scan"),
+    "asst.auto_error": ("🔔 Bước \"{step}\" vừa lỗi — tự chẩn đoán", "🔔 Step \"{step}\" just failed — auto-diagnose"),
+    "asst.auto_tz": ("🔔 {issue}: ticket không nêu múi giờ — tự gợi ý cách căn giờ log", "🔔 {issue}: no time zone in the ticket — auto-suggest the log clock"),
+    "asst.act.resolve_timezone": ("Áp dụng múi giờ & cắt log", "Apply time zone & slice logs"),
+    "asst.res.tz": ("Đã áp dụng, bước Log chạy lại", "Applied, the Log step runs again"),
+    "asst.scan_msg": ("Quét toàn bộ hệ thống và đề xuất", "Scan the whole system and suggest"),
+    "asst.act.download_attachments": ("Tải attachment", "Download attachments"),
+    "asst.act.resolve_gate": ("Xác nhận bằng chứng & tiếp tục", "Confirm evidence & continue"),
+    "asst.act.run_steps": ("Chạy luồng", "Run the workflow"),
+    "asst.act.log_scan": ("Quét lại catalog log", "Rebuild the log catalog"),
+    "asst.act.update_inputs": ("Cập nhật tuỳ chọn ticket", "Update ticket options"),
+    "asst.act.update_settings": ("Cập nhật cấu hình", "Update settings"),
+    "asst.act.create_bug": ("Tạo bug ticket", "Create bug ticket"),
+    "asst.act.open_folder": ("Mở thư mục", "Open folder"),
+    "asst.act.stop_pipeline": ("Dừng luồng", "Stop the workflow"),
+    "asst.res.download": ("Đang tải {n} file (xem Log)", "Downloading {n} file(s) (see Log)"),
+    "asst.res.gate": ("Đã xác nhận, luồng tiếp tục", "Confirmed, the workflow continues"),
+    "asst.res.started": ("Đã bắt đầu", "Started"),
+    "asst.res.saved": ("Đã lưu", "Saved"),
+    "asst.res.bug": ("Đã tạo {file}", "Created {file}"),
+    "asst.res.bug_dup": ("Đã có ticket trùng: {file}", "A matching ticket exists: {file}"),
+    "asst.res.stopped": ("Đã gửi lệnh dừng", "Stop requested"),
+    "infographic.code": ("VỊ TRÍ TRONG CODE", "CODE LOCATION"),
+    "infographic.severity": ("MỨC ĐỘ", "SEVERITY"),
+    "infographic.sev.critical": ("RẤT NGHIÊM TRỌNG", "CRITICAL"),
+    "infographic.sev.high": ("CAO", "HIGH"),
+    "infographic.sev.medium": ("TRUNG BÌNH", "MEDIUM"),
+    "infographic.sev.low": ("THẤP", "LOW"),
+    "infographic.confidence": ("ĐỘ TIN CẬY", "CONFIDENCE"),
+    "infographic.conf.high": ("CAO", "HIGH"),
+    "infographic.conf.medium": ("TRUNG BÌNH", "MEDIUM"),
+    "infographic.conf.low": ("THẤP", "LOW"),
     "err.issue": ("Nhập Jira key hoặc URL hợp lệ, ví dụ ABC-1234", "Enter a valid Jira key or URL, e.g. ABC-1234"),
     "err.log_missing": ("Không tìm thấy file log: {path}", "Log file not found: {path}"),
     "err.src_missing": ("Không tìm thấy folder source: {path}", "Source folder not found: {path}"),
@@ -174,13 +233,23 @@ MESSAGES = {
 }
 
 
+LANGUAGES = {"vi": "Vietnamese", "en": "English", "ko": "Korean"}
+
+
 def lang():
-    return "en" if settings.load().get("lang") == "en" else "vi"
+    value = settings.load().get("lang")
+    return value if value in LANGUAGES else "vi"
+
+
+def language_name(code=None):
+    """English name of the UI language, for telling an AI which language to write in."""
+    return LANGUAGES[code or lang()]
 
 
 def t(key, **kw):
     pair = MESSAGES.get(key)
     if not pair:
         return key
-    text = pair[1] if lang() == "en" else pair[0]
+    code = lang()
+    text = KO.get(key, pair[1]) if code == "ko" else pair[1] if code == "en" else pair[0]
     return text.format(**kw) if kw else text

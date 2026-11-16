@@ -11,8 +11,11 @@ After JSON parsing, the string is valid, well-formed **Confluence Storage XHTML*
 - Start with `<ac:structured-macro ac:name="info"><ac:rich-text-body><p>…one-line summary…</p></ac:rich-text-body></ac:structured-macro>`.
 - Use `<h2>`/`<h3>`, `<p>`, `<ul>/<ol>/<li>`, `<table><tbody><tr><th>/<td>`, `<strong>`, `<code>`.
 - Code and log excerpts: `<ac:structured-macro ac:name="code"><ac:parameter ac:name="language">text</ac:parameter><ac:plain-text-body><![CDATA[ … ]]></ac:plain-text-body></ac:structured-macro>`.
-- Include **exactly one** PlantUML sequence diagram, as a top-level macro under a heading
-  `<h2>Diagnostic Diagram</h2>`:
+- Write every heading, sentence and table cell in the report language named in the prompt; keep code,
+  log lines, identifiers, file paths and error text verbatim.
+- Include **exactly one** PlantUML sequence diagram, as a top-level macro under the heading
+  `<h2>Diagnostic Diagram</h2>` (Vietnamese report: `<h2>Sơ đồ chẩn đoán</h2>`, Korean report:
+  `<h2>진단 다이어그램</h2>`):
   `<ac:structured-macro ac:name="plantuml"><ac:plain-text-body><![CDATA[@startuml … @enduml]]></ac:plain-text-body></ac:structured-macro>`.
   The diagram must have `participant` declarations and `->` interactions grounded in the evidence
   (observed vs. proposed steps).
@@ -21,5 +24,7 @@ After JSON parsing, the string is valid, well-formed **Confluence Storage XHTML*
 ## Suggested sections
 
 Summary; Issue Overview (table: key, component, version, severity); Timeline; Evidence
-(log lines, code references); Root Cause Analysis; Diagnostic Diagram; Recommended Actions
-(table: priority, action, owner, verification); Risks; Open Questions.
+(log lines, code references); Root Cause Analysis; Suggested Solution and Code Location
+(keep the analysis' related-code verdict, the suspected-location table with `file:line`, symbol,
+reason and confidence, the proposed fix - diffs as a `code` macro - and its impact); Diagnostic
+Diagram; Recommended Actions (table: priority, action, owner, verification); Risks; Open Questions.
