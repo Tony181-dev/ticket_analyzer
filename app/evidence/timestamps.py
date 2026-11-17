@@ -9,6 +9,7 @@ import json
 import re
 
 SCHEMA_VERSION = 2
+MAX_EXTRA_WINDOWS = 2  # time ranges typed by hand at step 2, on top of the incident window
 # Abbreviations people actually write in tickets. Ambiguous ones (CST, IST...) are left out on purpose.
 _ZONES = {"UTC": 0, "GMT": 0, "Z": 0, "KST": 540, "JST": 540, "ICT": 420, "WIB": 420, "SGT": 480, "HKT": 480,
           "AWST": 480, "CET": 60, "CEST": 120, "EET": 120, "EEST": 180, "BST": 60, "WET": 0, "WEST": 60,
@@ -112,10 +113,13 @@ def normalize_focus(data):
     date = data.get("incident_date")
     date = date.strip() if isinstance(date, str) and re.fullmatch(r"\s*\d{4}-\d{2}-\d{2}\s*", date) else None
     picks = _attachment_picks(data.get("attachments"))
+    extra = normalize_windows(data.get("extra_windows"))
     return {
         "schema_version": SCHEMA_VERSION, "time_basis": "ticket-clock",
         "time_start": start, "time_end": end,
-        "filter_mode": "window" if start or end else "full",
+        # Same clock (and time zone) as time_start/time_end; a log line in ANY window is kept.
+        "extra_windows": extra,
+        "filter_mode": "window" if start or end or extra else "full",
         "ticket_utc_offset": format_offset(parse_offset(data.get("ticket_utc_offset"))) or None,
         "incident_date": date,
         "confidence": confidence if confidence in ("high", "medium", "low", "none") else "none",
@@ -125,6 +129,20 @@ def normalize_focus(data):
         # [] = it looked and found nothing worth downloading.
         "attachments": picks,
     }
+
+
+def normalize_windows(value):
+    """Up to MAX_EXTRA_WINDOWS extra ranges [{time_start, time_end}]; empty or invalid rows are dropped."""
+    out = []
+    for row in value if isinstance(value, list) else []:
+        if not isinstance(row, dict):
+            continue
+        raw = [row.get(key) for key in ("time_start", "time_end")]
+        clocks = [normalize_clock(v) for v in raw]
+        if any(v not in (None, "") and c is None for v, c in zip(raw, clocks)) or not any(clocks):
+            continue
+        out.append({"time_start": clocks[0], "time_end": clocks[1]})
+    return out[:MAX_EXTRA_WINDOWS]
 
 
 def parse_focus(answer):

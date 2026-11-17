@@ -4,8 +4,11 @@ Read **only the attached Jira ticket** (`01-jira.md`) and, when supplied, the at
 (`01-attachments.md`). Do not inspect log contents or source code and do not invent anything:
 every value you return must be traceable to the ticket text, its comments or the attachment list.
 
-You decide three things for the log processor. When the ticket does not let you decide one of
-them, say so with `null` / an empty list — never guess to fill a field.
+You normalize incident times and rank downloadable evidence. Unknown times/zones stay `null`.
+Archive contents are unknown before downloading: that is NOT a reason to reject a log bundle.
+Auto downloads as much useful evidence as the total byte limit allows; your ranking decides what
+fits first. Review presents a budget-safe proposal which the user may accept or edit. Manual
+does not call this instruction: the user enters files, incident time and UTC time zone directly.
 
 ## 1. When did it happen (`time_start`, `time_end`, `incident_date`)
 
@@ -13,12 +16,16 @@ Find the clock time or time range the ticket ties to the reported problem (a rep
 the description, a "happened at 14:30" in a comment, a time visible in a pasted log excerpt).
 
 - One precise time: return a window from about 2 minutes before to 1 minute after it.
-- An explicit interval: use it, with a small margin when its endpoints are point times.
+- An explicit interval: preserve its endpoints (do not widen it arbitrarily).
 - Several occurrences: use the one the ticket describes in most detail; mention the others in `reason`.
 - A date without a time, the ticket's created/updated time, a build time or an unrelated time is
   **not** an incident time. If nothing usable exists, set both `time_start` and `time_end` to `null`.
-- Write the time **exactly as the ticket states it**. Do not convert between time zones; the
-  application aligns the window to the log's clock later, when it can see the log files.
+- Understand conversational times and normalize the clock to **`HH:MM:SS[.mmm]`**. For example,
+  "bug xảy ra ở 19:38 - 19:40" means `19:38:00` → `19:40:00`; "7:38 pm to 7:40 pm" means
+  the same interval; "19h38 đến 19h40" also means that interval. "23:58–00:02" crosses midnight.
+  Do not leave natural-language strings or a combined interval inside one JSON endpoint.
+- Preserve the ticket's **clock basis**, not its original spelling. Do not convert between time
+  zones; the application aligns the normalized window to the log's clock after downloading.
 - `incident_date` is the calendar date of the incident as `YYYY-MM-DD` when the ticket states it,
   else `null`.
 
@@ -28,25 +35,41 @@ Give the UTC offset of the time you extracted, as `"+09:00"` / `"-05:00"` / `"+0
 
 - the ticket names a zone or offset next to the time ("14:30 KST", "05:30 UTC", "UTC+7");
 - or the time was copied from a pasted log line / tool output whose zone is stated.
+- Example: `19:38–19:40 UTC+7` → `time_start: "19:38:00"`, `time_end: "19:40:00"`,
+  `ticket_utc_offset: "+07:00"`. A UTC offset is a time zone, NOT the log − ticket clock shift.
 
 If the ticket gives no zone, return `null`. Do not assume the reporter's country, the server's
 zone or the offset of Jira's own timestamps.
 
 ## 3. Which attachments are worth downloading (`attachments`)
 
-Only when `01-attachments.md` is supplied. Pick the files that can contain the log evidence for
-**this** incident; list them most useful first, each with a short reason.
+Only when `01-attachments.md` is supplied. Rank images and files that may contain log evidence
+for **this** incident, each with a short evidence-based reason. The app enforces the final budget.
 
 - Prefer logs and log archives: names with `log`, `logcat`, `dlt`, `dmesg`, `journal`, `syslog`,
   `trace`, `dump`, `bugreport`, extensions like `.log .txt .dlt .gz .zip .7z .tar .tgz`, rotated
-  files (`app.log.1`). A split archive (`x.7z.001`, `.002`, …) counts as one item: list its first part.
-- Use the ticket text: a file the reporter points at ("see attached main.log") comes first.
+  files (`app.log.1`). Split `.7z.001`, `.zip.001`, `.part01.rar` sets count as ONE indivisible
+  archive: list the first part, sum ALL parts' sizes, and never choose a partial/incomplete set.
+  Nineteen parts that exceed the cap must ALL be skipped, leaving room for other files.
+- Screenshots (`png/jpg/jpeg/webp/gif/bmp`) are useful visual evidence and inexpensive compared
+  with logs: prioritize them, including when there are no logs at all. They go to visual AI
+  analysis, NOT the text log slicer. Do not reject an image-only ticket.
+- Use the ticket text: files the reporter points at ("see attached main.log") rank first among logs.
+  The referenced name may be an INNER member of a ZIP with a different name. Select the plausible
+  containing archive(s) confidently and explain that membership needs verification after extraction.
+  Do not claim that you have inspected an archive manifest you have not been given.
 - Use upload time: when several log sets exist, prefer the one uploaded closest after the
   incident; for re-uploads with the same name prefer the newest.
-- Skip screenshots, videos, documents, binaries and files clearly about something else.
-- Respect the download limit stated at the top of `01-attachments.md`: stop adding files once the
-  listed sizes would exceed it, keeping the most relevant ones.
-- If no attachment looks like a log for this incident, return an empty list `[]`.
+- Skip videos, documents and binaries. Do not discard plausible ZIP/log bundles merely because
+  their filename does not match the ticket's text. Large/many logs are sliced to a bounded Log brief
+  in the next step; raw archives are never sent as giant AI input.
+- Respect the TOTAL download limit at the top of `01-attachments.md`, not a per-file limit. Prefer
+  explicitly related evidence, then fit as many additional log sets as possible into the remaining
+  space. If a set does not fit, continue to smaller files instead of stopping at that set.
+- No usable incident time: return null clocks but still rank/download logs for the full-range
+  Log brief, allowing the analysis step to identify relevant periods from actual evidence.
+- No logs but images: select images. No useful downloadable evidence at all: `[]`; the application
+  continues safely without logs. Do not return `[]` just because archive membership is unknown.
 
 ## 4. Search hints (`keywords`, `services`)
 

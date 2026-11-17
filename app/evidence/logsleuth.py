@@ -148,6 +148,9 @@ def slice_logs(files, out, catalog=None, focus=None, budget_tokens=50000, option
         "budgetTokens": budget,
         "timeStart": focus.get("time_start") or "",
         "timeEnd": focus.get("time_end") or "",
+        # More ranges in the same (log) clock; a line inside ANY window is kept.
+        "timeWindows": [{"start": w.get("time_start") or "", "end": w.get("time_end") or ""}
+                        for w in focus.get("extra_windows") or [] if w.get("time_start") or w.get("time_end")],
         "extraGrep": [_escape(k) for k in focus.get("keywords") or [] if str(k).strip()],
         "services": opt["services"] if opt["mode"] == "manual" else [],
         "before": opt["before"], "after": opt["after"], "windowMs": opt["window_ms"],

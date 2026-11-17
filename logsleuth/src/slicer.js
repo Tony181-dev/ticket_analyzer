@@ -103,6 +103,7 @@ function sliceLog(logFiles, catalog, opt = {}) {
     parser: 'auto',
     timeStart: '',
     timeEnd: '',
+    timeWindows: [],
     ...opt,
   };
 
@@ -118,7 +119,7 @@ function sliceLog(logFiles, catalog, opt = {}) {
   const minLvl = o.minLevel ? LEVEL_ORDER.indexOf(o.minLevel[0].toUpperCase()) : -1;
 
   // --- ingest: many files, mtime order, optional time window --------------
-  const src = readRecords(logFiles, o.parser, { timeStart: o.timeStart, timeEnd: o.timeEnd });
+  const src = readRecords(logFiles, o.parser, { timeStart: o.timeStart, timeEnd: o.timeEnd, timeWindows: o.timeWindows });
 
   // --- hard filter ---------------------------------------------------------
   const recs = [];
@@ -255,6 +256,7 @@ function sliceLog(logFiles, catalog, opt = {}) {
       parser: src.format,
       formatNote: src.note,
       timeWindow: src.timeWindow,
+      timeWindows: src.timeWindows,
       totalLines: src.totalLines,
       afterTime: src.keptLines,
       droppedByTime: src.droppedByTime,
@@ -304,8 +306,10 @@ function renderBrief(result, opt = {}) {
   o.push(`- **Format detected**: \`${stats.parser}\`` + (stats.formatNote ? ` — ${stats.formatNote}` : ''));
   o.push(`- **Services**: ${stats.services.length ? stats.services.map((s) => `\`${s}\``).join(', ') : '_all in catalog_'}`);
   if (stats.timeWindow) {
-    o.push(`- **Time window**: \`${stats.timeWindow.start}\` → \`${stats.timeWindow.end}\`` +
-      (stats.droppedByTime ? ` (${stats.droppedByTime.toLocaleString()} line(s) outside the window discarded)` : ''));
+    const windows = stats.timeWindows && stats.timeWindows.length ? stats.timeWindows : [stats.timeWindow];
+    o.push(`- **Time window${windows.length > 1 ? 's' : ''}**: ` +
+      windows.map((w) => `\`${w.start}\` → \`${w.end}\``).join('; ') +
+      (stats.droppedByTime ? ` (${stats.droppedByTime.toLocaleString()} line(s) outside the window${windows.length > 1 ? 's' : ''} discarded)` : ''));
   }
   o.push(`- **Catalog**: ${stats.catalogEntries.toLocaleString()} statements / ${stats.anchors.toLocaleString()} anchors; **${stats.firedCount}** appeared in this log`);
   o.push(`- **Reduction**: ${stats.totalLines.toLocaleString()} lines read` +

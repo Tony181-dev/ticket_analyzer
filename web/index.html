@@ -106,11 +106,20 @@
             <input id="source" placeholder="Hint: D:\src\project\src-root-folder" autocomplete="off">
             <button class="btn btn-ghost" id="pickSource" data-i18n="in.pickSource">Chọn folder…</button>
           </div>
+          <div class="muted small" data-i18n="in.sourceHint">Source này tạo catalog cho Log brief; Code Graph có thể bật/tắt riêng.</div>
           <div class="check-help">
             <label class="check small-check"><input type="checkbox" id="useCodeGraph"> <span data-i18n="in.useCodeGraph">Dùng Code Graph</span></label>
             <button type="button" class="help-icon" data-help="in.useCodeGraphHelp" data-i18n-title="help.open" aria-label="?">?</button>
           </div>
-          <div class="muted small" data-i18n="in.sourceHint">Source này tạo catalog cho Log brief; Code Graph có thể bật/tắt riêng.</div>
+          <div class="check-help data-dir-label">
+            <label for="dataDir"><span data-i18n="in.dataDir">Folder lưu trữ thông tin ticket</span> <span class="muted" data-i18n="in.optional">(tuỳ chọn)</span></label>
+            <button type="button" class="help-icon" data-help="in.dataDirHelp" data-i18n-title="help.open" aria-label="?">?</button>
+          </div>
+          <div class="picker">
+            <input id="dataDir" autocomplete="off">
+            <button class="btn btn-ghost" id="pickDataDir" data-i18n="in.pickSource">Chọn folder…</button>
+          </div>
+          <div class="muted small data-dir-hint" id="dataDirHint"></div>
         </div>
         <div class="run-actions">
           <button id="runAll" class="btn btn-primary btn-lg"></button>

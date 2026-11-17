@@ -10,7 +10,7 @@
  * as {"error": "..."} with exit code 1.
  *
  *   scan  {root, out, excludeDirs?, maxFileSizeMB?, minAnchorLength?}
- *   slice {catalog|null, files[], out, services?, timeStart?, timeEnd?,
+ *   slice {catalog|null, files[], out, services?, timeStart?, timeEnd?, timeWindows?[{start,end}],
  *          extraGrep?, budgetTokens?, before?, after?, minLevel?, minScore?}
  *   span  {files[]}  -> first/last wall clock seen in each log file
  */
@@ -60,8 +60,9 @@ function slice(q) {
     parser: q.parser || 'auto',
     timeStart: q.timeStart || '',
     timeEnd: q.timeEnd || '',
+    timeWindows: (q.timeWindows || []).map((w) => ({ start: (w && w.start) || '', end: (w && w.end) || '' })),
   };
-  for (const value of [opt.timeStart, opt.timeEnd]) {
+  for (const value of [opt.timeStart, opt.timeEnd, ...opt.timeWindows.flatMap((w) => [w.start, w.end])]) {
     if (value && parseClock(value) === null) throw new Error('Invalid time window: use HH:MM:SS[.mmm]');
   }
   if (!FORMAT_NAMES.includes(opt.parser)) throw new Error('Unknown log parser');
@@ -79,7 +80,7 @@ function slice(q) {
     out: q.out,
     stats: {
       totalLines: s.totalLines, kept: s.kept, tokens: s.tokens, chunkCount: s.chunkCount,
-      firedCount: s.firedCount, timeWindow: s.timeWindow || null,
+      firedCount: s.firedCount, timeWindow: s.timeWindow || null, timeWindows: s.timeWindows || [],
       afterTime: s.afterTime, tokenUpperBound: s.tokenUpperBound, tokenEstimate: s.tokenEstimate,
       seeds: s.seeds, seedsKept: s.seedsKept, regionsDroppedForBudget: s.seedsDropped,
       budgetTokens: s.budgetTokens, tokenCounting: s.tokenCounting, outputBytes: s.outputBytes,

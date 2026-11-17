@@ -3,6 +3,7 @@
 LogSleuth (Node), CodeGraph and the XHTML repair/validation run for real.
 Run:  python -m unittest discover -s tests
 """
+import base64
 import json
 import os
 import sys
@@ -35,6 +36,7 @@ class FakeWorld:
         self.analysis_options = []
         self.pages = {}
         self.page_bodies = {}
+        self.uploads = {}
         self.fail_upload = False
         self.fail_infographic = False
         self.next_page_id = 555
@@ -59,8 +61,16 @@ class FakeWorld:
             return {"content": [{"type": "text", "text": json.dumps({"page": {"id": args["page_id"], "title": args["title"]}})}]}
         if tool == "confluence_upload_attachment":
             if self.fail_upload:
-                return {"isError": True, "content": [{"type": "text", "text": "attachment upload failed"}]}
-            return {"content": [{"type": "text", "text": "{}"}]}
+                return {"isError": False, "content": [{"type": "text", "text": json.dumps({
+                    "attachment": {"success": False, "error": "attachment upload failed"}})}]}
+            name = args["filename"]
+            entry = {"id": str(9000 + len(self.uploads)), "title": name,
+                     "extensions": {"fileSize": len(base64.b64decode(args["content_base64"]))}}
+            self.uploads[(args["content_id"], name)] = entry
+            return {"content": [{"type": "text", "text": json.dumps({"attachment": entry})}]}
+        if tool == "confluence_get_attachments":
+            entry = self.uploads.get((args["content_id"], args["filename"]))
+            return {"content": [{"type": "text", "text": json.dumps({"attachments": [entry] if entry else []})}]}
         if tool == "confluence_delete_page":
             for title, page_id in list(self.pages.items()):
                 if page_id == args["page_id"]:
@@ -815,6 +825,95 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(run["steps"]["understand"]["status"], "error")
         self.assertEqual(run["steps"]["log"]["status"], "idle")
         self.assertEqual(run["steps"]["analyze"]["status"], "idle")
+
+    def test_rerun_clears_an_earlier_pass_error_on_steps_not_reached_yet(self):
+        settings.save({"ai_mode": "copilot", "review_before_publish": True})
+
+        def fail_graph(run, cfg, ex):
+            raise RuntimeError("simulated graph failure")
+
+        with patch.dict(pipeline.RUNNERS, {"graph": fail_graph}):
+            run = pipeline.create("RERUN-ERR-1", [str(self.work / "app.log")], str(self.work / "src"),
+                                  use_infographic=False, continue_on_optional_error=False)
+            pipeline.executor.start(run["id"])
+            self.wait()
+        run = pipeline.get(run["id"])
+        self.assertEqual(run["steps"]["graph"]["status"], "error")
+
+        seen = []
+        real_jira = pipeline.RUNNERS["jira"]
+
+        def watch_jira(run, cfg, ex):
+            seen.append((run["steps"]["graph"]["status"], run["steps"]["graph"]["error"]))
+            return real_jira(run, cfg, ex)
+
+        with patch.dict(pipeline.RUNNERS, {"jira": watch_jira}):
+            pipeline.executor.start(run["id"], until="jira")  # a new pass that never reaches step 4
+            self.wait()
+        run = pipeline.get(run["id"])
+        self.assertEqual(seen, [("idle", "")], "the old failure is cleared as soon as the new pass starts")
+        self.assertEqual((run["steps"]["graph"]["status"], run["steps"]["graph"]["error"]), ("idle", ""))
+        self.assertEqual(run["steps"]["jira"]["status"], "done")
+
+    def test_ticket_data_folder_holds_every_file_and_an_attachments_subfolder(self):
+        with tempfile.TemporaryDirectory() as root, patch.object(paths, "RUNS", Path(root) / "runs"):
+            folder = Path(root) / "tickets" / "DATA-1"
+            run = pipeline.create("DATA-1", [str(self.work / "app.log")], use_codegraph=False, use_infographic=False,
+                                  data_dir=str(folder))
+            pipeline.executor.start(run["id"], until="log")
+            self.wait()
+            run = pipeline.get(run["id"])
+            self.assertEqual(run["steps"]["log"]["status"], "done", run["steps"]["log"]["error"])
+            self.assertEqual(pipeline.run_dir(run["id"]), folder)
+            for name in ("01-jira.md", "02-focus.json", "03-log-brief.md", "run.log"):
+                self.assertTrue((folder / name).is_file(), name)
+            meta = Path(root) / "runs" / run["id"]
+            self.assertTrue((meta / "run.json").is_file(), "History still finds the run")
+            self.assertFalse((meta / "01-jira.md").exists())
+            self.assertEqual([a["name"] for a in run["steps"]["jira"]["artifacts"]][:1], ["01-jira.md"])
+            self.assertEqual(pipeline.attachment_folder(run), folder / "attachments")
+            shown = pipeline.view(run)
+            self.assertEqual((shown["work_dir"], shown["attachment_dir"]), (str(folder), str(folder / "attachments")))
+
+            moved = Path(root) / "tickets" / "DATA-1-moved"
+            pipeline.update_inputs(run["id"], data_dir=str(moved))
+            self.assertTrue((moved / "03-log-brief.md").is_file(), "existing files follow the run")
+            self.assertTrue((folder / "03-log-brief.md").is_file(), "copied, never removed")
+            self.assertEqual(pipeline.get(run["id"])["steps"]["log"]["status"], "done")
+            with self.assertRaises(ValueError):
+                pipeline.update_inputs(run["id"], data_dir="relative/folder")
+            pipeline.clear_runs()
+            self.assertTrue((moved / "01-jira.md").is_file(), "clearing History never deletes a ticket data folder")
+
+    def test_extra_time_ranges_typed_at_step_2_are_sliced_too(self):
+        run = pipeline.create("WIN-1", [str(self.work / "app.log")], use_codegraph=False, use_infographic=False)
+        pipeline.executor.start(run["id"], until="log")
+        self.wait()
+        brief = pipeline.run_dir(run["id"]) / "03-log-brief.md"
+        self.assertIn("status=133", brief.read_text(encoding="utf-8"))
+        self.assertNotIn("crash in mixer", brief.read_text(encoding="utf-8"), "13:00 is outside 12:29-12:31")
+
+        focus = {**pipeline.get(run["id"])["focus"],
+                 "extra_windows": [{"time_start": "12:59", "time_end": "13:01:00"}, {"time_start": "bad"}, {}]}
+        pipeline.write_file(run["id"], "02-focus.json", json.dumps(focus))
+        self.assertEqual(pipeline.get(run["id"])["focus"]["extra_windows"],
+                         [{"time_start": "12:59:00", "time_end": "13:01:00"}], "invalid / empty rows are dropped")
+        pipeline.executor.start(run["id"], "log", only=True)
+        self.wait()
+        run = pipeline.get(run["id"])
+        self.assertEqual(run["steps"]["log"]["status"], "done", run["steps"]["log"]["error"])
+        text = brief.read_text(encoding="utf-8")
+        self.assertIn("status=133", text)
+        self.assertIn("crash in mixer", text, "a line inside the second range is kept")
+        self.assertNotIn("I BluetoothService: boot", text, "12:20 is in no range")
+        self.assertEqual([(w["start"], w["end"]) for w in run["log_stats"]["timeWindows"]],
+                         [("12:29:00", "12:31:00"), ("12:59:00", "13:01:00")])
+        self.assertIn("(+1)", run["steps"]["log"]["note"])
+
+        pipeline.executor.start(run["id"], "understand", only=True)  # a fresh AI reading of the ticket
+        self.wait()
+        self.assertEqual(pipeline.get(run["id"])["focus"]["extra_windows"],
+                         [{"time_start": "12:59:00", "time_end": "13:01:00"}], "typed ranges survive")
 
     def test_continue_after_understand_failure_uses_full_log_range(self):
         settings.save({"ai_mode": "copilot", "review_before_publish": True})

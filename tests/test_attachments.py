@@ -41,12 +41,27 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):
         HITS.append(self.path)
+        if self.path.startswith("/redirect/"):  # relative Location, like a Jira behind a proxy (axel 2.4 cannot)
+            self.send_response(302)
+            self.send_header("Location", "/secure/" + self.path[len("/redirect/"):])
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
         body = FILES.get(self.path)
         if body is None:
             self.send_response(404)
             self.end_headers()
             return
-        self.send_response(200)
+        ranged = __import__("re").fullmatch(r"bytes=(\d+)-(\d*)", self.headers.get("Range") or "")
+        if ranged:  # what multi-connection downloaders need
+            start = int(ranged.group(1))
+            end = int(ranged.group(2)) if ranged.group(2) else len(body) - 1
+            self.send_response(206)
+            self.send_header("Content-Range", f"bytes {start}-{end}/{len(body)}")
+            body = body[start:end + 1]
+        else:
+            self.send_response(200)
+        self.send_header("Accept-Ranges", "bytes")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -103,6 +118,7 @@ class AttachmentTest(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls.httpd.shutdown()
+        cls.httpd.server_close()
 
     def wait(self):
         for _ in range(300):
@@ -115,6 +131,7 @@ class AttachmentTest(unittest.TestCase):
         run = pipeline.create("ATT-1", source_dir=str(self.source_dir), auto_attachments=True, use_codegraph=False,
                               gate="review")
         before = HITS.count("/secure/attachment/1/logs.zip")
+        image_before = HITS.count("/secure/attachment/2/shot.png")
         pipeline.executor.start(run["id"])
         self.wait()
         run = pipeline.get(run["id"])
@@ -124,7 +141,8 @@ class AttachmentTest(unittest.TestCase):
         self.assertIn("01-attachments.md", self.understand_files[-1], "the AI chooses from the attachment list")
         self.assertEqual(run["steps"]["log"]["status"], "waiting", "the run pauses at the evidence gate")
         self.assertEqual(run["pending_gate"]["mode"], "review")
-        self.assertEqual(run["pending_gate"]["suggested"], ["logs.zip"], "the AI's pick is pre-selected")
+        self.assertEqual(run["pending_gate"]["suggested"], ["logs.zip", "shot.png"],
+                 "the AI's log pick and inexpensive visual evidence are pre-selected")
         self.assertEqual(run["pending_gate"]["reasons"]["logs.zip"], "the log archive")
         self.assertEqual(run["steps"]["analyze"]["status"], "idle")
         self.assertEqual(HITS.count("/secure/attachment/1/logs.zip"), before, "nothing is downloaded before the user confirms")
@@ -146,7 +164,8 @@ class AttachmentTest(unittest.TestCase):
         self.assertEqual(run["steps"]["log"]["status"], "done")
         self.assertEqual(run["steps"]["analyze"]["status"], "done")
         self.assertIn("status=133", (pipeline.run_dir(run["id"]) / "03-log-brief.md").read_text(encoding="utf-8"))
-        self.assertNotIn("/secure/attachment/2/shot.png", HITS, "only the ticked files are fetched")
+        self.assertEqual(HITS.count("/secure/attachment/2/shot.png"), image_before,
+                 "review fetches only the user-confirmed files")
 
         # manual download of the image afterwards; the zip is already there -> not fetched again
         before = HITS.count("/secure/attachment/1/logs.zip")
@@ -173,8 +192,10 @@ class AttachmentTest(unittest.TestCase):
         self.assertEqual(run["steps"]["log"]["status"], "done")
         self.assertEqual(run["steps"]["collab"]["status"], "waiting", "only the publish review is left")
         self.assertTrue(next(a for a in run["attachments"] if a["filename"] == "logs.zip")["analyzed"])
-        self.assertFalse(next(a for a in run["attachments"] if a["filename"] == "shot.png").get("path"),
-                         "a screenshot is never downloaded as log evidence")
+        self.assertTrue(next(a for a in run["attachments"] if a["filename"] == "shot.png").get("path"),
+                "Auto includes visual evidence even when the AI only picked a log archive")
+        self.assertTrue((pipeline.run_dir(run["id"]) / "05-image-evidence.md").is_file(),
+                "the standalone image and the image inside the ZIP are summarized separately")
 
     def test_skip_mode_goes_on_without_logs_when_the_download_fails(self):
         run = pipeline.create("ATT-404", auto_attachments=True, use_infographic=False, gate="skip")
@@ -315,6 +336,51 @@ class AttachmentTest(unittest.TestCase):
             settings.save({"axel_command": ""})
             os.environ["TA_AXEL"] = ""
 
+    def test_axel_plan_picks_axel_only_where_it_helps(self):
+        url = f"http://127.0.0.1:{self.httpd.server_port}/secure/attachment/big/big.bin"
+        FILES["/secure/attachment/big/big.bin"] = os.urandom(3 * 1024 * 1024)
+        try:
+            with mock.patch.object(attachments, "axel_version", return_value="Axel version 2.4 (CYGWIN_NT-5.1)"):
+                plan, why = attachments._axel_plan("axel.exe", url, {}, 0, None)
+                self.assertEqual((plan["url"], plan["size"]), (url, 3 * 1024 * 1024), "real size from the server")
+                self.assertEqual(plan["connections"], min(attachments._connections(), 6), "≥512 KB per connection")
+                redirected = url.replace("/secure/", "/redirect/")
+                self.assertEqual(attachments._axel_plan("axel.exe", redirected, {}, 0, None)[0]["url"], url,
+                                 "axel gets the final URL, never the redirect")
+                self.assertEqual(attachments._axel_plan("axel.exe", url, {}, 0, 1024 * 1024), (None, "download budget"))
+                self.assertTrue(attachments._axel_plan("axel.exe", url, {}, 0, 4 * 1024 * 1024)[0],
+                                "a file that fits the cap still goes through axel")
+                small = f"http://127.0.0.1:{self.httpd.server_port}/secure/attachment/2/shot.png"
+                self.assertEqual(attachments._axel_plan("axel.exe", small, {}, 4, None), (None, "small file"))
+                with mock.patch.object(attachments, "_probe", return_value=("https://jira/x", 5 * 1024 * 1024, True)):
+                    self.assertEqual(attachments._axel_plan("axel.exe", url, {}, 0, None)[1], "HTTPS needs axel 2.5+")
+                with mock.patch.object(attachments, "_probe", return_value=(url, 5 * 1024 * 1024, False)):
+                    self.assertEqual(attachments._axel_plan("axel.exe", url, {}, 0, None)[1], "no Range support")
+        finally:
+            FILES.pop("/secure/attachment/big/big.bin", None)
+
+    def test_bundled_axel_downloads_a_big_file_through_a_redirect_under_a_cap(self):
+        os.environ.pop("TA_AXEL")
+        path = "/secure/attachment/big/capture.bin"
+        FILES[path] = os.urandom(5 * 1024 * 1024 + 123)
+        try:
+            if not attachments.axel_path():
+                self.skipTest("no usable axel on this machine")
+            item = {"id": "big", "filename": "capture.bin", "size": len(FILES[path]), "kind": "other",
+                    "url": f"http://127.0.0.1:{self.httpd.server_port}/redirect/attachment/big/capture.bin"}
+            folder = Path(tempfile.mkdtemp(prefix="ta-axel-big-"))
+            lines, pcts = [], []
+            got = attachments.download("ATT-1", [item], folder, log=lines.append, max_bytes=8 * 1024 * 1024,
+                                       progress=lambda phase, i, n, name, pct=None: pct is not None and pcts.append(pct))
+            self.assertEqual(got["capture.bin"].read_bytes(), FILES[path])
+            self.assertTrue(any("[axel ×" in line for line in lines), lines)
+            self.assertEqual([p.name for p in folder.iterdir()], ["capture.bin"], "no .part / .st leftovers")
+            self.assertEqual(pcts[-1], 100)
+            self.assertTrue((paths.DATA / "axel" / ".axelrc").is_file(), "axel runs with the app's own settings")
+        finally:
+            FILES.pop(path, None)
+            os.environ["TA_AXEL"] = ""
+
     def test_stop_interrupts_a_download_and_extraction(self):
         folder = Path(tempfile.mkdtemp(prefix="ta-stop-"))
         base = f"http://127.0.0.1:{self.httpd.server_port}"
@@ -335,21 +401,138 @@ class AttachmentTest(unittest.TestCase):
             attachments.extract(archive, log=lambda m: None, cancel=stop)
         self.assertFalse((folder / "x.zip_extracted").exists())
 
-    def test_ticket_without_usable_attachments_is_a_ticket_only_run(self):
+    def test_image_only_ticket_is_reviewed_and_analyzed_without_log_processing(self):
         real = self.__class__.issue_json
         self.__class__.issue_json = json.dumps({"key": "ATT-1", "summary": "BT fails", "attachments": [
-            {"id": "2", "filename": "shot.png", "size": 4, "url": "http://127.0.0.1:1/shot.png"}]})
+            {"id": "2", "filename": "shot.png", "size": 4,
+             "url": f"http://127.0.0.1:{self.httpd.server_port}/secure/attachment/2/shot.png"}]})
         try:
             run = pipeline.create("ATT-1", auto_attachments=True, use_infographic=False, gate="review")
             pipeline.executor.start(run["id"])
             self.wait()
+            self.assertEqual(run["pending_gate"]["suggested"], ["shot.png"])
+            pipeline.executor.resolve_gate(run["id"], ["shot.png"])
+            self.wait()
         finally:
             self.__class__.issue_json = real
         run = pipeline.get(run["id"])
-        self.assertEqual([run["steps"][s]["status"] for s in ("understand", "log")], ["skipped"] * 2,
-                         "a screenshot is not log evidence: no AI triage, no gate")
+        self.assertEqual([run["steps"][s]["status"] for s in ("understand", "log")], ["done", "skipped"],
+                         "an image-only ticket gets triage and visual analysis but never enters LogSleuth")
         self.assertNotIn("pending_gate", run)
+        self.assertEqual(run["inputs"]["log_files"], [])
+        self.assertTrue(run["attachments"][0].get("path"))
         self.assertEqual(run["steps"]["analyze"]["status"], "done")
+
+    def test_auto_still_downloads_logs_when_ai_returns_no_picks(self):
+        run = pipeline.create("ATT-1", auto_attachments=True, use_infographic=False, gate="skip")
+        focus = pipeline._clean_focus({"attachments": [], "time_start": "12:29", "time_end": "12:31"})
+        with mock.patch.object(pipeline, "_parse_focus", return_value=focus):
+            pipeline.executor.start(run["id"])
+            self.wait()
+        self.assertEqual(run["steps"]["log"]["status"], "done", run["steps"]["log"]["error"])
+        self.assertEqual(run["steps"]["analyze"]["status"], "done")
+        self.assertTrue(all(a.get("path") for a in run["attachments"]))
+
+    def test_download_enforces_actual_bytes_not_only_declared_size(self):
+        item = {"id": "1", "filename": "logs.zip", "size": 1,
+                "url": f"http://127.0.0.1:{self.httpd.server_port}/secure/attachment/1/logs.zip"}
+        with tempfile.TemporaryDirectory() as folder:
+            with self.assertRaisesRegex(RuntimeError, "budget"):
+                attachments.download("CAP-1", [item], folder, log=lambda _: None, max_bytes=16)
+            self.assertEqual(list(Path(folder).iterdir()), [], "an over-budget partial file is discarded")
+
+    def test_auto_nineteen_parts_within_budget_reach_real_log_brief_and_analysis(self):
+        import py7zr
+
+        stream = io.BytesIO()
+        with py7zr.SevenZipFile(stream, mode="w") as archive:
+            archive.writestr(LOG, "inner/main.log")
+        data = stream.getvalue()
+        items, urls = [], []
+        for index in range(19):
+            name = f"budget-capture.7z.{index + 1:03}"
+            url = f"/secure/attachment/budget/{name}"
+            FILES[url] = data[len(data) * index // 19:len(data) * (index + 1) // 19]
+            urls.append(url)
+            items.append({"id": f"budget-{index}", "filename": name, "size": len(FILES[url]),
+                          "url": f"http://127.0.0.1:{self.httpd.server_port}{url}"})
+        issue = json.dumps({"key": "BUDGET-19", "summary": "BT fails", "attachments": items})
+        cfg = {**settings.load(), "auto_download_max_mb": 1}
+        focus = pipeline._clean_focus({"attachments": [], "time_start": "12:29", "time_end": "12:31"})
+        hit_start = len(HITS)
+        real_ask = pipeline.ai.ask
+        try:
+            with mock.patch.object(self.__class__, "issue_json", issue), \
+                    mock.patch.object(settings, "load", return_value=cfg), \
+                    mock.patch.object(pipeline, "_parse_focus", return_value=focus), \
+                    mock.patch.object(pipeline.ai, "ask", wraps=real_ask) as ask:
+                run = pipeline.create("BUDGET-19", auto_attachments=True, use_infographic=False,
+                                      use_codegraph=False, gate="skip")
+                pipeline.executor.start(run["id"])
+                self.wait()
+            self.assertEqual(run["steps"]["log"]["status"], "done", run["steps"]["log"]["error"])
+            self.assertEqual(run["steps"]["analyze"]["status"], "done")
+            self.assertEqual(len(run["attachments"]), 19)
+            self.assertTrue(all(a.get("path") for a in run["attachments"]))
+            self.assertTrue(set(urls).issubset(HITS[hit_start:]), "all 19 parts were fetched over real HTTP")
+            self.assertEqual(Path(run["inputs"]["log_files"][0]).read_text(encoding="utf-8"), LOG)
+            brief = pipeline.run_dir(run["id"]) / "03-log-brief.md"
+            self.assertIn("status=133", brief.read_text(encoding="utf-8"))
+            analysis_files = next(call.args[2] for call in ask.call_args_list
+                                  if any(Path(p).name == "ticket-analysis.md" for p in call.args[2]))
+            self.assertIn(brief, analysis_files)
+            self.assertFalse(any(Path(p).suffix in (".7z", ".001", ".log") for p in analysis_files),
+                             "AI receives the bounded brief, never raw logs or archive parts")
+        finally:
+            for url in urls:
+                FILES.pop(url, None)
+
+    def test_download_limit_is_total_not_per_file(self):
+        url = f"http://127.0.0.1:{self.httpd.server_port}/secure/attachment/2/shot.png"
+        items = [{"id": str(n), "filename": f"shot-{n}.png", "size": 1, "url": url} for n in range(3)]
+        with tempfile.TemporaryDirectory() as folder:
+            got = attachments.download("CAP-2", items, folder, log=lambda _: None, max_bytes=8)
+            self.assertEqual(len(got), 2)
+            self.assertEqual(sum(p.stat().st_size for p in Path(folder).iterdir()), 8)
+
+    def test_numbered_zip_parts_extract_to_real_logs(self):
+        import multivolumefile
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            with multivolumefile.MultiVolume(root / "capture.zip", mode="wb", volume=60) as out:
+                out.write(make_zip())
+            parts = sorted(root.glob("capture.zip.*"))
+            self.assertGreater(len(parts), 1)
+            extracted = attachments.extract(parts[0], log=lambda _: None)
+            self.assertIsNotNone(extracted)
+            self.assertEqual((extracted / "logs" / "main.log").read_text(encoding="utf-8"), LOG)
+
+    def test_nineteen_7z_parts_extract_only_when_every_download_succeeds(self):
+        import py7zr
+
+        stream = io.BytesIO()
+        with py7zr.SevenZipFile(stream, mode="w") as archive:
+            archive.writestr(LOG, "logs/main.log")
+        data = stream.getvalue()
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            parts = {}
+            for index in range(19):
+                path = root / f"capture.7z.{index + 1:03}"
+                path.write_bytes(data[len(data) * index // 19:len(data) * (index + 1) // 19])
+                parts[path.name] = path
+            items = [{"filename": n, "size": p.stat().st_size} for n, p in parts.items()]
+            partial = {n: p for n, p in parts.items() if not n.endswith(".010")}
+            with mock.patch.object(attachments, "download", return_value=partial), \
+                    mock.patch.object(attachments, "extract") as extract:
+                logs, _ = attachments.collect("SPLIT-1", items, set(parts), root, log=lambda _: None)
+            self.assertEqual(logs, [])
+            extract.assert_not_called()
+            with mock.patch.object(attachments, "download", return_value=parts):
+                logs, _ = attachments.collect("SPLIT-1", items, set(parts), root, log=lambda _: None)
+            self.assertEqual(len(logs), 1)
+            self.assertEqual(Path(logs[0]).read_text(encoding="utf-8"), LOG)
 
     def test_zip_slip_refused(self):
         bad = self.download_root / "evil.zip"

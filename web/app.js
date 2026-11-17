@@ -11,7 +11,7 @@ const PREVIEW_STEP_MS = 500;
 const S = {
   state: null,           // /api/state
   run: null,             // current run object (null = draft)
-  draft: { log_files: [], source_dir: '', gate: 'skip', auto_attachments: true, use_codegraph: true,
+  draft: { log_files: [], source_dir: '', data_dir: '', gate: 'skip', auto_attachments: true, use_codegraph: true,
     use_infographic: true, auto_publish_to_collab: false },
   selected: null,        // step id open in the drawer
   tab: null,             // artifact name open in the drawer
@@ -48,7 +48,7 @@ const guard = (fn) => async (...a) => { try { await fn(...a); } catch (e) { toas
 // A new ticket starts from the "defaults for a new ticket" in Settings.
 function freshDraft() {
   const s = S.state.settings;
-  return { log_files: [], source_dir: '', gate: s.default_gate || 'skip',
+  return { log_files: [], source_dir: '', data_dir: '', gate: s.default_gate || 'skip',
     auto_attachments: s.default_use_attachments !== false, use_codegraph: s.default_use_codegraph !== false,
     use_infographic: s.default_use_infographic !== false, auto_publish_to_collab: !s.review_before_publish };
 }
@@ -97,7 +97,7 @@ function connect() {
       S.state.settings = m.settings; renderMode();
       if (window.Assistant) Assistant.sync();
       if (!S.run) {
-        S.draft = { ...freshDraft(), log_files: S.draft.log_files, source_dir: S.draft.source_dir };
+        S.draft = { ...freshDraft(), log_files: S.draft.log_files, source_dir: S.draft.source_dir, data_dir: S.draft.data_dir };
         renderInputs();
       }
     }
@@ -297,6 +297,7 @@ function renderInputs() {
   $('#logMode').value = logOptions().mode;
   $('#logMode').disabled = !!S.state.busy;
   $('#useCodeGraph').checked = inputs().use_codegraph !== false;
+  renderDataDir();
   for (const b of document.querySelectorAll('.gate-btn')) {
     b.setAttribute('aria-checked', String(b.dataset.gate === (inputs().gate || 'skip')));
     b.disabled = !!S.state.busy;
@@ -307,6 +308,30 @@ function renderInputs() {
   $('#autoPublishCollab').disabled = !!S.state.busy;
   $('#issue').disabled = !!S.run;
 }
+// Ticket data folder: everything of the run goes there, attachments into its attachments/ folder. Empty =
+// the usual places, shown greyed as the placeholder (run files in data/runs/<run>, attachments in Downloads).
+const pathSep = () => ((S.state.runs_dir || '').includes('\\') ? '\\' : '/');
+const joinPath = (...parts) => parts.filter(Boolean).map((p, i) => (i ? String(p).replace(/^[\\/]+/, '') : String(p).replace(/[\\/]+$/, ''))).join(pathSep());
+
+function renderDataDir() {
+  const own = (inputs().data_dir || '').trim();
+  const issue = S.run ? S.run.issue : ($('#issue').value.trim().toUpperCase().match(/[A-Z][A-Z0-9_]+-\d+/) || ['<ISSUE>'])[0];
+  const runFolder = S.run && !own ? S.run.work_dir : joinPath(S.state.runs_dir, `${issue}-…`);
+  const downloads = (S.state.settings.download_dir || '').trim();
+  const attFolder = own ? joinPath(own, 'attachments')
+    : S.run ? S.run.attachment_dir
+      : downloads ? joinPath(downloads, issue) : (S.state.default_download_dir || '').replace('<ISSUE>', issue);
+  if (document.activeElement !== $('#dataDir')) $('#dataDir').value = own;
+  $('#dataDir').placeholder = runFolder || '';
+  $('#dataDir').disabled = $('#pickDataDir').disabled = !!S.state.busy;
+  $('#dataDirHint').textContent = t('in.dataDirAtt', { path: attFolder || '' });
+}
+$('#dataDir').onchange = guard(() => setInputs({ data_dir: $('#dataDir').value.trim() }));
+$('#pickDataDir').onclick = guard(async () => {
+  const { paths } = await api('/api/pick', { body: { kind: 'folder' } });
+  if (paths.length) await setInputs({ data_dir: paths[0] });
+});
+
 $('#autoAtt').onchange = guard(() => setInputs({ auto_attachments: $('#autoAtt').checked }));
 $('#useCodeGraph').onchange = guard(() => setInputs({ use_codegraph: $('#useCodeGraph').checked }));
 for (const b of document.querySelectorAll('.gate-btn')) {
@@ -364,7 +389,7 @@ $('#resumeBtn').onclick = guard(async () => {
   renderButtons();
 });
 $('#issue').onkeydown = (e) => { if (e.key === 'Enter') $('#runAll').click(); };
-$('#issue').oninput = () => { if (!S.run) { renderFlow(); renderButtons(); } };
+$('#issue').oninput = () => { if (!S.run) { renderFlow(); renderButtons(); renderDataDir(); } };
 $('#stopBtn').onclick = guard(() => api('/api/stop', { body: {} }));
 
 // "Continue" makes sense when the run moved forward but has steps left that are not just the publish gate.
@@ -829,12 +854,24 @@ function renderExtra(step, st) {
   } else if (step === 'understand') {
     const f = (S.run && S.run.focus) || {};
     const help = f.reason ? t('focus.ai', { reason: f.reason }) + (f.confidence ? t('focus.conf', { c: f.confidence }) : '') : t('focus.help');
+    // Up to two more ranges typed by hand (same clock / time zone as the main window); a log line inside
+    // any of them is kept.
+    const extra = f.extra_windows || [];
+    const extraRows = [0, 1].map((k) => {
+      const w = extra[k] || {};
+      return `<span class="win-no">#${k + 2}</span>
+        <div class="field"><label for="fx${k}Start">${esc(t('focus.from'))}</label><input id="fx${k}Start" data-extra-start="${k}" placeholder="HH:MM:SS" value="${esc(w.time_start || '')}"></div>
+        <div class="field"><label for="fx${k}End">${esc(t('focus.to'))}</label><input id="fx${k}End" data-extra-end="${k}" placeholder="HH:MM:SS" value="${esc(w.time_end || '')}"></div>
+        <span></span>`;
+    }).join('');
     html += `<div class="extra-grid">
       <div class="field"><label>${esc(t('focus.from'))}</label><input id="fStart" placeholder="HH:MM:SS" value="${esc(f.time_start || '')}"></div>
       <div class="field"><label>${esc(t('focus.to'))}</label><input id="fEnd" placeholder="HH:MM:SS" value="${esc(f.time_end || '')}"></div>
       <div class="field"><label>${esc(t('focus.keys'))}</label><input id="fKeys" value="${esc((f.keywords || []).join(', '))}"></div>
       <button class="btn btn-primary" id="fApply" ${S.run ? '' : 'disabled'}>${esc(t('focus.apply'))}</button>
     </div>
+    <div class="extra-windows"><div class="check-help"><label>${esc(t('focus.extraTitle'))}</label><button type="button" class="help-icon" data-help="focus.extraHelp" title="${esc(t('help.open'))}" aria-label="${esc(t('help.open'))}">?</button></div>
+      <div class="extra-grid">${extraRows}</div></div>
     <div class="extra-note">${esc(help)}</div>`;
   } else if (step === 'graph') {
     const ready = st.status === 'done' || st.status === 'stale';
@@ -847,8 +884,13 @@ function renderExtra(step, st) {
   }
   box.innerHTML = html;
   if ($('#fApply')) $('#fApply').onclick = guard(async () => {
+    const clocks = [$('#fStart'), $('#fEnd'), ...document.querySelectorAll('[data-extra-start], [data-extra-end]')]
+      .map((el) => el.value.trim());
+    if (clocks.some((c) => c && clockMs(c) == null)) throw new Error(t('focus.badClock'));
+    const extra = [0, 1].map((k) => ({ time_start: $(`#fx${k}Start`).value.trim() || null, time_end: $(`#fx${k}End`).value.trim() || null }))
+      .filter((w) => w.time_start || w.time_end);
     const focus = { ...((S.run && S.run.focus) || {}), time_start: $('#fStart').value.trim(), time_end: $('#fEnd').value.trim(),
-      keywords: $('#fKeys').value.split(',').map((s) => s.trim()).filter(Boolean) };
+      extra_windows: extra, keywords: $('#fKeys').value.split(',').map((s) => s.trim()).filter(Boolean) };
     S.run = await api(`/api/runs/${encodeURIComponent(S.run.id)}/files/02-focus.json`, { method: 'PUT', raw: true, body: JSON.stringify(focus) });
     await startStep('log', true);
   });
@@ -869,23 +911,49 @@ function renderExtra(step, st) {
   else if (step === 'log' && $('#lsForm')) bindLogPanel();
 }
 
-// The evidence gate: confirm/enter which attachments to download, the time window and the clock shift.
+// The evidence gate: files, incident time and UTC time zone. Clock alignment happens after extraction.
+const archiveGroup = (name) => {
+  const m = /^(.*\.(?:7z|zip))\.\d{3,}$/i.exec(name) || /^(.*)\.part\d+\.rar$/i.exec(name);
+  return m ? m[1].toLowerCase() + (/\.rar$/i.test(name) ? '.part.rar' : '') : null;
+};
+
+// Review stops its proposal at the automatic download limit, like Auto; what the limit left out is listed
+// here so the user decides whether to download it anyway.
+const overBudgetNames = (g) => new Set((g.over_budget || []).flatMap((d) => d.files || [d.filename]));
+const confirmOver = (msg) => (typeof window === 'undefined' || typeof window.confirm !== 'function' || window.confirm(msg));
+
+function gateOverBox(g) {
+  const over = g.over_budget || [];
+  if (g.mode !== 'review' || !over.length) return '';
+  const names = over.map((d) => ((d.files || []).length > 1 ? `${d.filename} (+${d.files.length - 1} part)` : d.filename));
+  return `<div class="warn-box gate-over" role="alert"><b>${esc(t('gate.overTitle', { mb: g.max_mb }))}</b>
+    <div>${esc(t('gate.overBody', { n: over.length, size: fmtSize(g.over_bytes || 0) }))}</div>
+    <div class="small">${esc(names.join(', '))}</div>
+    <div class="ls-actions"><button type="button" class="btn btn-sm" id="gateAddOver">${esc(t('gate.overAdd', { n: over.length }))}</button></div></div>`;
+}
+
 function gatePanel() {
   const g = S.run.pending_gate;
   const f = S.run.focus || {};
   const review = g.mode === 'review';
-  const list = (S.run.attachments || []).filter((a) => a.kind !== 'other');
+  const list = S.run.attachments || [];
   const suggested = new Set(g.suggested || []);
+  const over = overBudgetNames(g);
   const rows = list.map((a, i) => {
     const reason = g.reasons && g.reasons[a.filename] ? `<div class="muted small">${esc(g.reasons[a.filename])}</div>` : '';
     const badges = [a.analyzed ? t('att.analyzed') : a.path ? t('att.have') : ''].filter(Boolean)
-      .map((b) => ` <span class="tag ok">${esc(b)}</span>`).join('');
+      .map((b) => ` <span class="tag ok">${esc(b)}</span>`).join('')
+      + (review && over.has(a.filename) ? ` <span class="tag warn">${esc(t('gate.overTag'))}</span>` : '');
+    const kind = /\.(png|jpe?g|gif|bmp|webp)$/i.test(a.filename) ? 'image' : a.kind;
     return `<label class="att-row"><input type="checkbox" data-gate-i="${i}" ${suggested.has(a.filename) ? 'checked' : ''}>
       <span class="att-name">${esc(a.filename)}${badges}${reason}</span>
-      <span class="tag">${esc(t('att.kind.' + a.kind))}</span><span class="muted small att-size">${fmtSize(a.size || 0)}</span></label>`;
+      <span class="tag">${esc(t('att.kind.' + kind))}</span><span class="muted small att-size">${fmtSize(a.size || 0)}</span></label>`;
   }).join('');
   const picked = inputs().log_files || [];
-  const shift = inputs().log_shift_minutes;
+  const zoneMinutes = offsetMinutes(f.ticket_utc_offset);
+  const zones = [...new Set([...TZ_OFFSETS, ...(zoneMinutes == null ? [] : [zoneMinutes])])].sort((a, b) => a - b);
+  const zoneOptions = `<option value="">${esc(t('gate.zoneAuto'))}</option>` + zones.map((m) =>
+    `<option value="${fmtOffset(m)}" ${m === zoneMinutes ? 'selected' : ''}>UTC${fmtOffset(m)}</option>`).join('');
   const zone = f.ticket_utc_offset ? t('gate.zone', { z: f.ticket_utc_offset }) : t('gate.noZone');
   const reason = f.reason ? `<p class="muted small">AI: ${esc(f.reason)}</p>` : '';
   return `<div class="ls-panel gate-panel">
@@ -893,14 +961,17 @@ function gatePanel() {
     <p class="muted small">${esc(t(review ? 'gate.introReview' : 'gate.introManual'))}</p>
     ${reason}
     ${list.length ? `<div class="att-list">${rows}</div>` : `<p class="muted small">${esc(t('gate.noAttachments'))}</p>`}
+    <p class="muted small" id="gateSelection"></p>
+    ${gateOverBox(g)}
+    ${g.excluded && g.excluded.length ? `<p class="muted small">${esc(t('gate.excluded'))}: ${esc(g.excluded.join(', '))}</p>` : ''}
     ${picked.length ? `<p class="muted small">${esc(t('gate.ownLogs', { n: picked.length }))}</p>` : ''}
     <button type="button" class="btn btn-sm" id="gateAddLogs">${esc(t('in.pickLogs'))}</button>
     <div class="ls-grid" style="margin-top:10px">
-      <div class="field"><label for="gateStart">${esc(t('focus.from'))}</label><input id="gateStart" placeholder="HH:MM:SS" value="${esc(f.time_start || '')}"></div>
-      <div class="field"><label for="gateEnd">${esc(t('focus.to'))}</label><input id="gateEnd" placeholder="HH:MM:SS" value="${esc(f.time_end || '')}"></div>
-      <div class="field"><label for="gateShift">${esc(t('gate.shift'))}</label><input id="gateShift" type="number" step="30" min="-840" max="840" placeholder="${esc(t('gate.shiftAuto'))}" value="${shift == null ? '' : esc(String(shift))}"></div>
+      <div class="field"><label for="gateStart">${esc(t('gate.from'))}</label><input id="gateStart" placeholder="HH:MM:SS" value="${esc(f.time_start || '')}"></div>
+      <div class="field"><label for="gateEnd">${esc(t('gate.to'))}</label><input id="gateEnd" placeholder="HH:MM:SS" value="${esc(f.time_end || '')}"></div>
+      <div class="field"><label for="gateZone">${esc(t('gate.timezone'))}</label><select id="gateZone">${zoneOptions}</select></div>
     </div>
-    <p class="muted small">${esc(zone)} · ${esc(t('gate.shiftHelp'))}</p>
+    <p class="muted small">${esc(zone)} · ${esc(t('gate.zoneHelp'))}</p>
     <div class="ls-actions">
       <button type="button" class="btn btn-primary" id="gateRun">${esc(t('gate.run'))}</button>
       <button type="button" class="btn" id="gateSkipLogs">${esc(t('gate.skipLogs'))}</button>
@@ -908,6 +979,32 @@ function gatePanel() {
 }
 
 function bindGatePanel() {
+  const list = S.run.attachments || [];
+  const boxes = [...document.querySelectorAll('[data-gate-i]')];
+  const cap = S.run.pending_gate.max_mb;
+  const selectedBytes = () => boxes.filter((b) => b.checked).map((b) => list[+b.dataset.gateI])
+    .reduce((n, a) => n + (Number(a.size) || 0), 0);
+  const overCap = () => !!cap && selectedBytes() > cap * 1048576;
+  const selection = () => {
+    const n = boxes.filter((b) => b.checked).length;
+    $('#gateSelection').textContent = t('gate.selection', { n, size: fmtSize(selectedBytes()) })
+      + (cap ? ' · ' + t('gate.limit', { mb: cap }) : '')
+      + (overCap() ? ' · ' + t('gate.overBudget') : '');
+    $('#gateSelection').className = overCap() ? 'small warn-text' : 'muted small';
+  };
+  if ($('#gateAddOver')) $('#gateAddOver').onclick = () => {
+    const over = overBudgetNames(S.run.pending_gate);
+    for (const box of boxes) if (over.has(list[+box.dataset.gateI].filename)) box.checked = true;
+    selection();
+  };
+  for (const box of boxes) box.onchange = () => {
+    const group = archiveGroup(list[+box.dataset.gateI].filename);
+    if (group) for (const other of boxes) {
+      if (archiveGroup(list[+other.dataset.gateI].filename) === group) other.checked = box.checked;
+    }
+    selection();
+  };
+  selection();
   $('#gateAddLogs').onclick = guard(async () => {
     const { paths } = await api('/api/pick', { body: { kind: 'files' } });
     if (paths.length) { await setInputs({ log_files: [...new Set([...inputs().log_files, ...paths])] }); renderDrawer(false); }
@@ -919,13 +1016,11 @@ function bindGatePanel() {
     renderButtons();
   });
   $('#gateRun').onclick = () => {
-    const list = (S.run.attachments || []).filter((a) => a.kind !== 'other');
     const names = [...document.querySelectorAll('[data-gate-i]')].filter((b) => b.checked).map((b) => list[+b.dataset.gateI].filename);
-    const shiftText = $('#gateShift').value.trim();
-    const body = { names, time_start: $('#gateStart').value.trim(), time_end: $('#gateEnd').value.trim() };
-    if (shiftText !== '') body.shift_minutes = Number(shiftText);
-    else body.shift_minutes = null;
+    const body = { names, time_start: $('#gateStart').value.trim(), time_end: $('#gateEnd').value.trim(),
+      ticket_utc_offset: $('#gateZone').value || null, shift_minutes: null };
     if (!names.length && !inputs().log_files.length) { toast(t('gate.needSomething'), true); return; }
+    if (overCap() && !confirmOver(t('gate.overConfirm', { size: fmtSize(selectedBytes()), mb: cap }))) return;
     answer(body)();
   };
   $('#gateSkipLogs').onclick = answer({ skip_logs: true });
@@ -1195,8 +1290,12 @@ function openAttachments() {
   if (!run) return;
   const list = run.attachments || [];
   $('#attSub').textContent = `${run.issue}${run.summary ? ' - ' + run.summary : ''}`;
-  $('#attFolder').value = run.inputs.download_dir || S.state.settings.download_dir || '';
+  // A ticket data folder fixes where attachments go: <data folder>/attachments.
+  const fixed = !!(run.inputs.data_dir || '').trim();
+  $('#attFolder').value = fixed ? run.attachment_dir || '' : run.inputs.download_dir || S.state.settings.download_dir || '';
   $('#attFolder').placeholder = (S.state.default_download_dir || '').replace('<ISSUE>', run.issue);
+  $('#attFolder').disabled = $('#attPick').disabled = fixed;
+  $('#attFolder').title = fixed ? t('att.folderFromDataDir') : '';
   $('#attList').innerHTML = list.length ? list.map((a, i) => {
     const badges = [a.path ? t('att.have') : '', a.analyzed ? t('att.analyzed') : ''].filter(Boolean)
       .map((b) => ` <span class="tag ok">${esc(b)}</span>`).join('');
@@ -1242,7 +1341,9 @@ $('#attRun').onclick = guard(async () => {
   const list = S.run.attachments || [];
   const names = attBoxes().filter((b) => b.checked).map((b) => list[+b.dataset.i].filename);
   if (!names.length) throw new Error(t('att.nothing'));
-  await api(`/api/runs/${encodeURIComponent(S.run.id)}/attachments`, { body: { names, folder: $('#attFolder').value.trim() } });
+  const fixed = !!(S.run.inputs.data_dir || '').trim();
+  await api(`/api/runs/${encodeURIComponent(S.run.id)}/attachments`,
+    { body: fixed ? { names } : { names, folder: $('#attFolder').value.trim() } });
   S.state.busy = true;
   S.run.att_progress = S.run.att_progress || { phase: 'download', done: 0, total: names.length, name: '', pct: null };
   closeModals();

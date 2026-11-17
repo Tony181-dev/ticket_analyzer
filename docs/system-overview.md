@@ -32,20 +32,31 @@ flowchart LR
 | Bước | Tác vụ | Điều kiện | Kết quả / vai trò |
 |---|---|---|---|
 | 1. Jira | Lấy ticket và attachment metadata qua MCP | Luôn chạy | `01-jira.md`, JSON thô, `01-attachments.md` (bảng cho AI chọn) |
-| 2. Hiểu ticket | AI trích giờ sự cố *như ticket viết*, múi giờ ticket nêu, ngày, và chọn attachment đáng tải | Có thể có log; trừ chế độ Manual | `02-understanding.md`, `02-focus.json` (schema 2); không đọc log hay source |
+| 2. Hiểu ticket | AI chuẩn hóa giờ văn nói thành HH:MM:SS, giữ đồng hồ ticket và múi giờ UTC được nêu; xếp hạng ảnh và log/archive, kể cả tên log bên trong ZIP | Có thể có log hoặc ảnh; trừ chế độ Manual | `02-understanding.md`, `02-focus.json` (schema 2); không đọc log hay source |
 | 3. Log brief | Lấy log (tải attachment theo chế độ xử lý), căn khung giờ sang đồng hồ của log, rồi LogSleuth lọc tín hiệu, gom ngữ cảnh, giảm lặp, giới hạn dung lượng | Có log (file chọn tay hoặc attachment) | `03-log-brief.md`, `03-log-span.md` (khoảng giờ từng file + căn múi giờ), `03-catalog.md` khi có source; không source thì seed bằng từ khóa ticket + tín hiệu lỗi |
 | 4. Code graph | Đồ thị cấu trúc Python/C/C++/Java/Kotlin/JS/TS; bản cho AI xếp symbol liên quan ticket lên đầu | Có source và bật Code Graph | HTML tương tác, `04-graph.simple.json` (focus theo ticket), report |
-| 5. Phân tích | AI tổng hợp ticket và các artifact của bước đã thành công | Luôn chạy | `05-analysis.md`; kèm `05-source-evidence.md` quanh các `file:line` LogSleuth match |
+| 5. Phân tích | AI tổng hợp ticket, ảnh và các artifact của bước đã thành công | Luôn chạy | `05-analysis.md`; `05-source-evidence.md` quanh các `file:line` LogSleuth match; nhiều ảnh được tóm tắt từng ảnh vào `05-image-evidence.md` |
 | 6. Định dạng | AI đổi phân tích thành Confluence Storage XHTML; sửa cục bộ trước, chỉ refine bằng AI nếu còn lỗi | Luôn chạy | `06-report.xhtml`, preview, phản hồi thô, log refine |
 | 7. Infographic | M365 tạo ảnh, lỗi thì fallback SVG cục bộ; Copilot CLI luôn dựng SVG từ JSON | Khi bật; lỗi không chặn publish | `06-infographic.*` |
 | 8. Publish | Tạo trang hoặc cập nhật trang trùng tiêu đề; đính ảnh nếu có, thiếu ảnh vẫn đăng và ghi chú | Sau duyệt (hoặc tự động nếu bật) | `07-collab.json` và URL trang |
 
+Infographic được upload qua `content_base64` + `filename`, tránh sandbox đường dẫn của máy chủ
+MCP. Publish kiểm tra cả `isError` lẫn `success: false` lồng trong JSON; chỉ chèn `ac:image` sau khi
+upload trả về attachment ID và `confluence_get_attachments` xác nhận đúng tên và số byte.
+Không xác minh được ảnh thì vẫn đăng report, ghi rõ lỗi và không báo thành công giả.
+
 ### Chế độ xử lý (evidence gate)
 
-Mỗi run có `gate`: **skip** (AI tự quyết trong giới hạn tải `auto_download_max_mb`, bước hỏng bị bỏ
-qua, chạy đến cuối), **review** (dừng ở bước Log với đề xuất của AI điền sẵn, người dùng xác nhận qua
-`POST /api/runs/<id>/gate`), **manual** (bước 2 không chạy; người dùng tự nhập tệp, khung giờ, lệch
-giờ). Tải attachment lỗi: skip ghi log rồi chạy tiếp không log; review/manual quay lại hỏi.
+Mỗi run có `gate`: **skip** (tải tối đa ảnh/log trong tổng `auto_download_max_mb`, ưu tiên ảnh rồi
+AI ranking, sau đó bộ log nhỏ; bước hỏng bị bỏ qua), **review** (dừng ở bước Log với đề xuất trong
+giới hạn, người dùng xác nhận hoặc thêm/bỏ tệp qua `POST /api/runs/<id>/gate`), **manual** (bước 2
+không chạy; người dùng nhập tệp, giờ sự cố, `ticket_utc_offset` dạng `+07:00` hoặc null).
+Đây là múi giờ của giờ nhập, không phải `shift_minutes`; API cũ vẫn nhận shift cho tương thích.
+Archive `.7z.001`, `.zip.001`, `.part01.rar` được chọn đủ bộ hoặc bỏ cả bộ; thiếu part hay kích thước
+không rõ thì không tự tải khi có cap. HTTP streaming cưỡng chế cap bằng byte thực, không chỉ metadata.
+Auto không bị chặn bởi AI trả attachment rỗng. Log luôn được slice có budget trước khi vào AI; ảnh
+không qua LogSleuth. Xác nhận chỉ có ảnh/không còn log sẽ bỏ qua xử lý log an toàn. Tải lỗi hoàn toàn:
+skip ghi log rồi tiếp tục; review/manual quay lại hỏi. `0` MB là không giới hạn.
 
 ### Căn múi giờ ([app/evidence/timealign.py](../app/evidence/timealign.py))
 

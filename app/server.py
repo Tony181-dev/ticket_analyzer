@@ -236,7 +236,7 @@ class Handler(BaseHTTPRequestHandler):
                                       body.get("use_codegraph"), body.get("logsleuth"),
                                       body.get("use_infographic"), body.get("continue_on_optional_error"),
                                       body.get("auto_publish_to_collab"), body.get("gate"),
-                                      body.get("log_shift_minutes"))
+                                      body.get("log_shift_minutes"), body.get("data_dir") or "")
                 if body.get("start", True):
                     pipeline.executor.start(run["id"], until=body.get("until"))
                 return self._send(200, pipeline.view(run))
@@ -253,11 +253,12 @@ class Handler(BaseHTTPRequestHandler):
                         body.get("download_dir"), body.get("use_codegraph"), body.get("logsleuth"),
                         body.get("use_infographic"), body.get("continue_on_optional_error"),
                         body.get("auto_publish_to_collab"), body.get("gate"),
-                        body["log_shift_minutes"] if "log_shift_minutes" in body else ...)))
+                        body["log_shift_minutes"] if "log_shift_minutes" in body else ..., body.get("data_dir"))))
                 if action == "gate":
                     pipeline.executor.resolve_gate(
                         run_id, body.get("names") or [], body.get("folder"), body.get("time_start"), body.get("time_end"),
-                        body["shift_minutes"] if "shift_minutes" in body else ..., bool(body.get("skip_logs")))
+                        body["shift_minutes"] if "shift_minutes" in body else ..., bool(body.get("skip_logs")),
+                        ticket_utc_offset=body["ticket_utc_offset"] if "ticket_utc_offset" in body else ...)
                     return self._send(202, {"ok": True})
                 if action == "timezone":
                     pipeline.executor.resolve_timezone(run_id, body.get("mode"), body.get("shift_minutes"),
@@ -322,6 +323,7 @@ def state():
         "logsleuth": {"defaults": logsleuth.DEFAULT_OPTIONS, "parsers": logsleuth.PARSERS,
                   "max_tokens": logsleuth.MAX_BRIEF_TOKENS, "min_tokens": logsleuth.MIN_BRIEF_TOKENS},
         "default_download_dir": str(attachments.default_folder("<ISSUE>")),
+        "runs_dir": str(paths.RUNS),  # a run without a ticket data folder keeps its files in runs_dir/<run id>/
     }
 
 

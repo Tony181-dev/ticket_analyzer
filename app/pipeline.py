@@ -20,8 +20,8 @@ from . import ai, attachments, events, logprep, mcp, paths, settings
 from .evidence import graph as codegraph
 from .i18n import language_name, relocalize, t
 from .evidence import logsleuth, timealign
-from .evidence.timestamps import (format_offset, normalize_clock, normalize_focus, normalize_shift, parse_focus,
-                                  parse_offset)
+from .evidence.timestamps import (format_offset, normalize_clock, normalize_focus, normalize_shift, normalize_windows,
+                                  parse_focus, parse_offset)
 from .report import collab, infographic, preview, storage
 from .report.refine_pipeline import DIAGRAM_HEADINGS, refine_report
 
@@ -42,8 +42,9 @@ GATES = settings.GATES
 
 # (file, label, kind, editable)
 ARTIFACTS = {
+    # 01-attachments.json is still written (machine-readable list) but has no tab: the table says it all.
     "jira": [("01-jira.md", "Ticket", "md", False), ("01-jira.json", "JSON thô", "json", False),
-             ("01-attachments.md", "Tệp đính kèm", "md", False), ("01-attachments.json", "Attachments", "json", False)],
+             ("01-attachments.md", "Tệp đính kèm", "md", False)],
     "understand": [("02-understanding.md", "Thời điểm trong ticket", "md", False),
                    ("02-focus.json", "Khung giờ & từ khoá", "json", False)],
     "log": [("03-log-brief.md", "Log brief", "md", False), ("03-log-span.md", "Khoảng giờ & múi giờ log", "md", False),
@@ -51,7 +52,8 @@ ARTIFACTS = {
     "graph": [("04-brain.html", "Sơ đồ tương tác", "html", False), ("04-GRAPH_REPORT.md", "Report", "md", False),
               ("04-graph.simple.json", "graph.simple.json (AI)", "json", False), ("04-graph.json", "graph.json", "json", False)],
     "analyze": [("05-analysis.md", "Phân tích", "md", True),
-                ("05-source-evidence.md", "Code evidence", "md", False)],
+                ("05-source-evidence.md", "Code evidence", "md", False),
+                ("05-image-evidence.md", "Image evidence", "md", False)],
     "format": [("06-report.preview.html", "Xem trước", "html", False), ("06-report.xhtml", "XHTML", "xhtml", True),
                ("06-report.raw.txt", "Phản hồi gốc của AI", "text", False), ("06-refine.log", "Log refine", "text", False)],
     "infographic": [("06-infographic.png", "Infographic", "image", False), ("06-infographic.jpg", "Infographic", "image", False),
@@ -257,8 +259,48 @@ def issue_key(text):
     return m.group(1).upper() if m else ""
 
 
-def run_dir(run_id):
+def _meta_dir(run_id):
+    """data/runs/<id>/: always holds run.json, so History finds every run wherever its data lives."""
     return paths.RUNS / run_id
+
+
+def run_dir(run_id):
+    """Where the run's files live: the ticket data folder chosen for the run (inputs.data_dir), else
+    data/runs/<id>/. Attachments go to <data folder>/attachments (see attachment_folder)."""
+    run = _runs.get(run_id)
+    if run is None:
+        try:
+            run = json.loads((_meta_dir(run_id) / "run.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            run = None
+    custom = str(((run or {}).get("inputs") or {}).get("data_dir") or "").strip()
+    return Path(custom) if custom else _meta_dir(run_id)
+
+
+def _check_data_dir(value):
+    """'' (use the default) or an absolute folder that exists or can be created; ValueError otherwise."""
+    value = str(value or "").strip()
+    if not value:
+        return ""
+    folder = Path(value).expanduser()
+    if not folder.is_absolute():
+        raise ValueError(t("err.data_dir_relative", path=value))
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise ValueError(t("err.data_dir", path=value, error=exc)) from exc
+    return str(folder)
+
+
+def _carry_files(old, new):
+    """The run's files (not run.json, not work folders) follow it to a newly chosen data folder. Copied, so
+    nothing the user may still need is removed; a file already in the new folder is kept."""
+    if old.resolve() == new.resolve() or not old.is_dir():
+        return
+    new.mkdir(parents=True, exist_ok=True)
+    for f in old.iterdir():
+        if f.is_file() and not f.name.startswith("run.json") and not (new / f.name).exists():
+            shutil.copy2(f, new / f.name)
 
 
 def _artifacts(run_id, step):
@@ -272,9 +314,11 @@ def _save(run):
     run["usage_total"] = usage_summary(run)
     for step in ORDER:
         run["steps"][step]["artifacts"] = _artifacts(run["id"], step)
-    tmp = run_dir(run["id"]) / "run.json.tmp"
+    meta = _meta_dir(run["id"])
+    meta.mkdir(parents=True, exist_ok=True)
+    tmp = meta / "run.json.tmp"
     tmp.write_text(json.dumps(run, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(run_dir(run["id"]) / "run.json")
+    tmp.replace(meta / "run.json")
     events.publish("run", run=view(run))
 
 
@@ -288,13 +332,16 @@ def view(run):
                     for step, state in (run.get("steps") or {}).items()}
     if isinstance(run.get("pending_gate"), dict):
         out["pending_gate"] = {**run["pending_gate"], "problem": relocalize(run["pending_gate"].get("problem"))}
+    if run.get("id") and isinstance(run.get("inputs"), dict):  # where files actually go, for the UI hints
+        out["work_dir"] = str(run_dir(run["id"]))
+        out["attachment_dir"] = str(attachment_folder(run))
     return out
 
 
 def get(run_id):
     with _lock:
         if run_id not in _runs:
-            file = run_dir(run_id) / "run.json"
+            file = _meta_dir(run_id) / "run.json"
             if not file.exists():
                 return None
             run = json.loads(file.read_text(encoding="utf-8"))
@@ -304,6 +351,7 @@ def get(run_id):
             run.setdefault("inputs", {}).setdefault("continue_on_optional_error", False)
             run["inputs"].setdefault("gate", "review" if run["inputs"].get("auto_attachments") else "skip")
             run["inputs"].setdefault("log_shift_minutes", None)
+            run["inputs"].setdefault("data_dir", "")
             run.setdefault("gate_state", {})
             run.pop("pending_attachments", None)  # pre-gate pause: the evidence gate replaces it
             changed = False
@@ -362,8 +410,9 @@ def list_runs(limit=50):
 
 def create(issue, log_files=(), source_dir="", auto_attachments=None, download_dir="", use_codegraph=None,
            logsleuth_options=None, use_infographic=None, continue_on_optional_error=None,
-           auto_publish_to_collab=None, gate=None, log_shift_minutes=None):
-    """New run. Options left as None take the "defaults for a new ticket" from Settings."""
+           auto_publish_to_collab=None, gate=None, log_shift_minutes=None, data_dir=""):
+    """New run. Options left as None take the "defaults for a new ticket" from Settings. `data_dir` is the
+    ticket data folder: every file of the run goes there, attachments into its attachments/ folder."""
     key = issue_key(issue)
     if not key:
         raise ValueError(t("err.issue"))
@@ -373,6 +422,7 @@ def create(issue, log_files=(), source_dir="", auto_attachments=None, download_d
             raise ValueError(t("err.log_missing", path=f))
     if source_dir and not Path(source_dir).is_dir():
         raise ValueError(t("err.src_missing", path=source_dir))
+    data_dir = _check_data_dir(data_dir)
     cfg = settings.load()
     gate = cfg["default_gate"] if gate is None else gate
     if gate not in GATES:
@@ -393,13 +443,13 @@ def create(issue, log_files=(), source_dir="", auto_attachments=None, download_d
         selected_catalog = {"path": log_options["catalog_path"], "source_path": log_options["catalog_path"],
                             **logsleuth.catalog_info(log_options["catalog_path"])}
     run_id = f"{key}-{datetime.now():%Y%m%d-%H%M%S}"
-    while run_dir(run_id).exists():  # two runs of one ticket created within the same second
+    while _meta_dir(run_id).exists():  # two runs of one ticket created within the same second
         run_id += "x"
-    run_dir(run_id).mkdir(parents=True, exist_ok=True)
+    _meta_dir(run_id).mkdir(parents=True, exist_ok=True)
     run = {
         "id": run_id, "issue": key, "summary": "", "created": time.time(), "updated": time.time(),
         "inputs": {"log_files": files, "source_dir": str(source_dir or ""), "auto_attachments": bool(auto_attachments),
-                   "gate": gate, "log_shift_minutes": normalize_shift(log_shift_minutes),
+                   "gate": gate, "log_shift_minutes": normalize_shift(log_shift_minutes), "data_dir": data_dir,
                    "download_dir": str(download_dir or ""), "use_codegraph": bool(use_codegraph),
                    "use_infographic": bool(use_infographic),
                    "continue_on_optional_error": bool(continue_on_optional_error),
@@ -432,7 +482,7 @@ def clear_runs(keep=None):
 
 def update_inputs(run_id, log_files=None, source_dir=None, auto_attachments=None, download_dir=None, use_codegraph=None,
                   logsleuth_options=None, use_infographic=None, continue_on_optional_error=None,
-                  auto_publish_to_collab=None, gate=None, log_shift_minutes=...):
+                  auto_publish_to_collab=None, gate=None, log_shift_minutes=..., data_dir=None):
     run = get(run_id)
     if not run:
         raise ValueError("Run not found")
@@ -452,7 +502,14 @@ def update_inputs(run_id, log_files=None, source_dir=None, auto_attachments=None
             raise ValueError(t("err.src_missing", path=source_dir))
     if log_shift_minutes is not ...:
         log_shift_minutes = normalize_shift(log_shift_minutes)
+    if data_dir is not None:
+        data_dir = _check_data_dir(data_dir)
     inputs = run["inputs"]
+    if data_dir is not None and data_dir != (inputs.get("data_dir") or ""):
+        old = run_dir(run_id)
+        inputs["data_dir"] = data_dir
+        _carry_files(old, run_dir(run_id))
+        _log(run, t("log.data_dir", path=run_dir(run_id)))
     if logsleuth_options is not None:
         options = logsleuth.normalize_options({**inputs.get("logsleuth", {}), **logsleuth_options},
                                              settings.load()["log_budget_tokens"])
@@ -666,6 +723,9 @@ class Executor:
         prior = {step: dict(run["steps"][step]) for step in ORDER}  # to keep a result when Stop interrupts a re-run
         fresh = False  # a step finished in this pass: results after it are outdated
         _mark_stale(run, ORDER[first])
+        for step in ORDER[first:]:  # an earlier pass's failure is not this pass's result: not reached yet
+            if run["steps"][step]["status"] == "error":
+                run["steps"][step].update(status="idle", error="", note="")
         _open_pass(run, ORDER[first], continued=after_gate)
         events.publish("busy", run_id=run_id, busy=True)
         paused = False
@@ -775,7 +835,7 @@ class Executor:
         self._download(run, names, "jira")
 
     def resolve_gate(self, run_id, names=(), folder=None, time_start=None, time_end=None, shift_minutes=...,
-                     skip_logs=False):
+                     skip_logs=False, ticket_utc_offset=...):
         """The user's answer at the evidence gate (Review / Manual): which attachments to download, the
         incident window and the log clock shift - or "go on without logs". The pipeline then continues."""
         run = self._idle_run(run_id)
@@ -786,11 +846,27 @@ class Executor:
                 raise ValueError(t("err.time_format"))
             clocks.append(clock)
         shift = ... if shift_minutes is ... else normalize_shift(shift_minutes)
+        zone = ...
+        if ticket_utc_offset is not ...:
+            zone = parse_offset(ticket_utc_offset)
+            if ticket_utc_offset not in (None, "") and zone is None:
+                raise ValueError(t("err.tz_offset"))
         known = {a["filename"] for a in run.get("attachments") or []}
         names = set() if skip_logs else {n for n in names or [] if n in known}
+        expanded = attachments.expand_archive_volumes(names, known)
+        if not attachments.complete_volume_set(expanded):
+            raise ValueError(t("err.att_incomplete"))
         if folder is not None:
             run["inputs"]["download_dir"] = str(folder).strip()
-        run["focus"] = _clean_focus({**(run.get("focus") or {}), "time_start": clocks[0], "time_end": clocks[1]})
+        focus = {**(run.get("focus") or {}), "time_start": clocks[0], "time_end": clocks[1]}
+        if zone is not ...:
+            focus["ticket_utc_offset"] = format_offset(zone) or None
+            run.setdefault("gate_state", {}).pop("tz", None)
+            run.pop("pending_tz", None)
+            # A zone describes the entered clock; it is not itself a log-clock shift.
+            if shift is ...:
+                shift = None
+        run["focus"] = _clean_focus(focus)
         _write(run, "02-focus.json", json.dumps(run["focus"], ensure_ascii=False, indent=2))
         if shift is not ...:
             run["inputs"]["log_shift_minutes"] = shift
@@ -858,8 +934,8 @@ class Executor:
         self.run_id = run_id
         available = [a["filename"] for a in run.get("attachments") or []]
         selected = set(names)
-        names = attachments.expand_7z_volumes(selected, available)
-        added_volumes = sum(1 for name in names - selected if attachments.is_7z_volume(name))
+        names = attachments.expand_archive_volumes(selected, available)
+        added_volumes = sum(1 for name in names - selected if attachments.archive_volume(name))
         analyze = {a["filename"] for a in run.get("attachments") or [] if a["filename"] in names and _analyzable(a)}
         if names:  # visible at once, before the worker thread has fetched anything
             queued = [a for a in run.get("attachments") or [] if a["filename"] in names]
@@ -879,7 +955,7 @@ class Executor:
                 state.update(before)
                 if step == "jira":
                     state["note"] = _jira_note(run, added)
-                    if added:
+                    if added or any(_is_image(a) and a.get("path") for a in run.get("attachments") or []):
                         run.setdefault("gate_state", {}).pop("skip_logs", None)
                         _refresh_skipped(run)
                         _mark_stale(run, "log")
@@ -908,16 +984,22 @@ executor = Executor()
 STEP_TITLE = {s["id"]: s["title"] for s in STEPS}
 
 
+def _out_dir(run):
+    d = run_dir(run["id"])
+    d.mkdir(parents=True, exist_ok=True)  # a ticket data folder may have been removed by hand
+    return d
+
+
 def _log(run, line, quiet=False):
     stamp = datetime.now().strftime("%H:%M:%S")
-    with open(run_dir(run["id"]) / "run.log", "a", encoding="utf-8") as f:
+    with open(_out_dir(run) / "run.log", "a", encoding="utf-8") as f:
         f.write(f"[{stamp}] {line}\n")
     if not quiet:
         events.publish("log", run_id=run["id"], line=f"[{stamp}] {line}")
 
 
 def _write(run, name, text):
-    (run_dir(run["id"]) / name).write_text(text, encoding="utf-8")
+    (_out_dir(run) / name).write_text(text, encoding="utf-8")
     return run_dir(run["id"]) / name
 
 
@@ -996,13 +1078,21 @@ def _size(n):
     return f"{n / 1048576:.1f} MB" if n >= 1048576 else f"{max(1, n // 1024)} KB" if n else "?"
 
 
+def _is_image(attachment):
+    return Path(str(attachment.get("filename", ""))).suffix.lower() in attachments.IMAGE_EXT
+
+
 def _analyzable(attachment):
-    """Could hold log text: anything except obvious media / documents / binaries."""
-    return (attachment.get("kind") != "other"
+    """Useful evidence: images, logs and archives; not videos, documents or binaries."""
+    return (_is_image(attachment) or attachment.get("kind") != "other"
             or Path(str(attachment.get("filename", "")).lower()).suffix not in attachments.SKIP_EXT)
 
 
 def _log_candidates(run):
+    return [a for a in run.get("attachments") or [] if _analyzable(a) and not _is_image(a)]
+
+
+def _evidence_candidates(run):
     return [a for a in run.get("attachments") or [] if _analyzable(a)]
 
 
@@ -1016,8 +1106,21 @@ def _attachment_listing(run, cfg):
              f"Download limit for automatic selection: {f'{cap} MB in total' if cap else 'none'}.", "",
              "| filename | size | uploaded | type |", "|---|---:|---|---|"]
     for a in items:
-        kind = a["kind"] if _analyzable(a) else "media/document (not a log)"
+        kind = "image (visual evidence)" if _is_image(a) else a["kind"] if _analyzable(a) else "document/binary/video"
         lines.append(f"| {a['filename']} | {_size(a.get('size'))} | {a.get('created') or '?'} | {kind} |")
+    lines += ["", "## Multipart archive sets (all parts or none)", ""]
+    available = [a["filename"] for a in items]
+    seen = set()
+    for a in items:
+        volume = attachments.archive_volume(a["filename"])
+        if not volume or volume[0] in seen:
+            continue
+        seen.add(volume[0])
+        group = attachments.expand_archive_volumes([a["filename"]], available)
+        total = sum(attachments.parse_size(i.get("size")) for i in items if i["filename"] in group)
+        complete = attachments.complete_volume_set(group)
+        lines.append(f"- {volume[0]}: {len(group)} parts, {_size(total)} total; "
+                     + ("consecutive parts available" if complete else "INCOMPLETE — do not select"))
     return "\n".join(lines) + "\n"
 
 
@@ -1031,6 +1134,11 @@ def _jira_note(run, added=None):
 
 
 def attachment_folder(run):
+    """<ticket data folder>/attachments when the run has one; else the download folder (run, then Settings)
+    plus the issue key; else Downloads/TicketAnalyzer/<ISSUE>."""
+    data_dir = str(run["inputs"].get("data_dir") or "").strip()
+    if data_dir:
+        return Path(data_dir) / "attachments"
     custom = (run["inputs"].get("download_dir") or settings.load().get("download_dir") or "").strip()
     return Path(custom) / run["issue"] if custom else attachments.default_folder(run["issue"])
 
@@ -1041,7 +1149,7 @@ def _progress_files(items):
                             "pct": 0} for a in items}
 
 
-def _fetch_attachments(run, names, analyze, cancel, step="jira"):
+def _fetch_attachments(run, names, analyze, cancel, step="jira", max_bytes=None):
     """Download the named attachments; logs from `analyze` ones join the log inputs. Returns #log files added.
 
     Progress is shown on `step`: the Jira card for a manual download, the Log card when the files are
@@ -1071,8 +1179,9 @@ def _fetch_attachments(run, names, analyze, cancel, step="jira"):
         _save(run)
 
     try:
+        limits = {"max_bytes": max_bytes} if max_bytes is not None else {}
         logs, files = attachments.collect(run["issue"], items, analyze, folder, log=lambda m: _log(run, m), cancel=cancel,
-                                          progress=progress)
+                                          progress=progress, **limits)
     finally:
         run.pop("att_progress", None)
     for a in run["attachments"]:
@@ -1091,36 +1200,61 @@ def _fetch_attachments(run, names, analyze, cancel, step="jira"):
 # ---------------------------------------------------------------------------
 # evidence gate: which attachments, which time window
 # ---------------------------------------------------------------------------
-def _attachment_picks(run):
-    """(picks, source): the attachments to fetch as log evidence - the AI's choice when step 2 made one,
-    otherwise every log/archive attachment, newest first."""
-    candidates = {a["filename"].casefold(): a for a in _log_candidates(run)}
-    chosen = (run.get("focus") or {}).get("attachments") if _done(run, "understand") else None
-    if chosen is not None:
-        picks = [{"filename": candidates[c["filename"].casefold()]["filename"], "reason": c.get("reason", "")}
-                 for c in chosen if c["filename"].casefold() in candidates]
-        return picks, "ai"
-    ordered = sorted((a for a in candidates.values() if a["kind"] in ("log", "archive")
-                      and not attachments.is_7z_volume_continuation(a["filename"])),
-                     key=lambda a: str(a.get("created") or ""), reverse=True)
-    return [{"filename": a["filename"], "reason": ""} for a in ordered], "heuristic"
+def _attachment_picks(run, focus=None):
+    """AI ranks evidence, never vetoes Auto acquisition with an empty/incomplete list.
+
+    Images are cheap, useful evidence. Fill remaining space with logs/archives (including bundles
+    whose inner filenames cannot be known until extraction), smallest sets first after AI priorities.
+    """
+    candidates = {a["filename"].casefold(): a for a in _evidence_candidates(run)}
+    focus = focus if focus is not None else (run.get("focus") if _done(run, "understand") else {})
+    chosen = (focus or {}).get("attachments")
+    ranked = {c["filename"].casefold(): (i, c.get("reason", "")) for i, c in enumerate(chosen or [])
+              if c["filename"].casefold() in candidates}
+    available = [a["filename"] for a in candidates.values()]
+    sizes = {a["filename"]: attachments.parse_size(a.get("size")) for a in candidates.values()}
+
+    def priority(a):
+        group = attachments.expand_archive_volumes([a["filename"]], available)
+        rank = min((ranked[n.casefold()][0] for n in group if n.casefold() in ranked), default=len(ranked))
+        return (not _is_image(a), rank, sum(sizes[n] for n in group), a["filename"].casefold())
+
+    ordered = sorted(candidates.values(), key=priority)
+    return [{"filename": a["filename"], "reason": ranked.get(a["filename"].casefold(), (0, ""))[1]}
+            for a in ordered], "ai" if ranked else "heuristic"
 
 
-def _within_budget(run, picks, cap_mb):
-    """Skip mode: the picks that fit the download limit, in order (a split archive counts with all its parts)."""
+def _budget_plan(run, picks, cap_mb):
+    """The picks that fit the download limit, in order (a split archive counts with all its parts), and
+    the ones left out: [{filename, files, bytes, reason: budget | incomplete | unknown_size}]."""
     available = [a["filename"] for a in run.get("attachments") or []]
     size = {a["filename"]: attachments.parse_size(a.get("size")) for a in run.get("attachments") or []}
-    left = int(cap_mb) * 1024 ** 2 if cap_mb else None
+    left = int(float(cap_mb) * 1024 ** 2) if cap_mb else None
     chosen, dropped = [], []
+    seen = set()
     for pick in picks:
-        need = sum(size.get(n, 0) for n in attachments.expand_7z_volumes({pick["filename"]}, available))
-        if left is not None and need > left:
-            dropped.append(pick["filename"])
+        name = pick["filename"]
+        if name in seen or name not in size:
+            continue
+        group = attachments.expand_archive_volumes([name], available)
+        seen.update(group)
+        need = sum(size[n] for n in group)
+        reason = ("incomplete" if not attachments.complete_volume_set(group)
+                  else "unknown_size" if left is not None and any(size[n] <= 0 for n in group)
+                  else "budget" if left is not None and need > left else "")
+        if reason:
+            dropped.append({"filename": name, "files": sorted(group), "bytes": need, "reason": reason})
             continue
         if left is not None:
             left -= need
-        chosen.append(pick["filename"])
+        chosen.append(min(group, key=lambda n: (attachments.archive_volume(n) or ("", 0))[1]))
     return chosen, dropped
+
+
+def _within_budget(run, picks, cap_mb):
+    """Skip mode: the picks that fit the download limit, and the names of those that did not."""
+    chosen, dropped = _budget_plan(run, picks, cap_mb)
+    return chosen, [d["filename"] for d in dropped]
 
 
 def _gate_pending(run):
@@ -1132,10 +1266,18 @@ def _open_gate(run, problem=""):
     """Pause at the log step until the user confirms the evidence (POST /api/runs/<id>/gate)."""
     picks, source = _attachment_picks(run) if run["inputs"].get("auto_attachments") else ([], "none")
     mode = run["inputs"].get("gate") if run["inputs"].get("gate") in ("review", "manual") else "review"
-    if mode == "manual" and source == "heuristic":
-        picks = []  # Manual: nothing is pre-selected by the app
+    cap = settings.load().get("auto_download_max_mb") or 0
+    names, dropped = _budget_plan(run, picks, cap) if mode != "manual" else ([], [])
+    suggested = attachments.expand_archive_volumes(names, [a["filename"] for a in run.get("attachments") or []])
+    # Review: the proposal stops at the limit like Auto does, but what it left out because of the limit is
+    # shown as a warning - the user decides whether to download it anyway.
+    over = [d for d in dropped if d["reason"] == "budget"]
     run["pending_gate"] = {"mode": mode, "problem": problem, "source": source,
-                           "suggested": [pick["filename"] for pick in picks],
+                           "suggested": sorted(suggested), "max_mb": cap,
+                           "excluded": [d["filename"] for d in dropped if d["reason"] != "budget"],
+                           "over_budget": over, "over_bytes": sum(d["bytes"] for d in over),
+                           "planned_bytes": sum(attachments.parse_size(a.get("size")) for a in run.get("attachments") or []
+                                                if a["filename"] in suggested),
                            "reasons": {pick["filename"]: pick["reason"] for pick in picks if pick["reason"]}}
     run.setdefault("gate_state", {}).pop("resolved", None)
     run["steps"]["log"].update(status="waiting", note=problem or t("note.gate_" + mode), error="")
@@ -1145,7 +1287,7 @@ def _open_gate(run, problem=""):
 def _acquire_logs(run, cfg, ex):
     """Skip mode: download the chosen attachments by itself. A failed download is logged, never fatal -
     the run simply continues with whatever evidence it has."""
-    if not run["inputs"].get("auto_attachments") or not _log_candidates(run):
+    if not run["inputs"].get("auto_attachments") or not _evidence_candidates(run):
         return
     picks, source = _attachment_picks(run)
     if not picks:
@@ -1155,14 +1297,21 @@ def _acquire_logs(run, cfg, ex):
     names, dropped = _within_budget(run, picks, cap)
     for name in dropped:
         _log(run, t("log.att_over_cap", name=name, mb=cap))
-    done = {a["filename"] for a in run.get("attachments") or [] if a.get("analyzed")}
-    names = [name for name in names if name not in done]
+    done = {a["filename"] for a in run.get("attachments") or []
+            if a.get("analyzed") and a.get("path") and Path(a["path"]).is_file()}
+    wanted = attachments.expand_archive_volumes(names, [a["filename"] for a in run["attachments"]])
+    # Keep a whole multipart set on retries, even when only some of its parts already exist.
+    wanted = {name for name in wanted if name not in done or
+              not attachments.expand_archive_volumes([name], wanted).issubset(done)}
+    names = [name for name in names if name in wanted]
     if not names:
         return
     _log(run, t("log.att_auto_" + source, names=", ".join(names)))
-    wanted = attachments.expand_7z_volumes(set(names), [a["filename"] for a in run["attachments"]])
+    used = sum(attachments.parse_size(a.get("size")) for a in run.get("attachments") or []
+               if a["filename"] in done and a["filename"] not in wanted)
+    remaining = max(0, int(cap) * 1024 ** 2 - used) if cap else None
     try:
-        _fetch_attachments(run, wanted, wanted, ex.check, "log")
+        _fetch_attachments(run, wanted, wanted, ex.check, "log", max_bytes=remaining)
     except Cancelled:
         raise
     except Exception as exc:
@@ -1206,10 +1355,13 @@ def step_understand(run, cfg, ex):
     if not _path(run, "01-jira.md").exists():
         raise RuntimeError(t("err.need_jira"))
     listing = _path(run, "01-attachments.md")
-    choose = bool(run["inputs"].get("auto_attachments") and _log_candidates(run) and listing.exists())
+    choose = bool(run["inputs"].get("auto_attachments") and _evidence_candidates(run) and listing.exists())
     files = [_path(run, "01-jira.md")] + ([listing] if choose else []) + [_instruction("understand.md")]
-    task = ("extract the explicitly stated incident time and its time zone"
-            + (", and choose which attachments from 01-attachments.md are worth downloading as log evidence" if choose else ""))
+    task = ("understand incident times written in natural language and normalize them to HH:MM:SS, "
+            "extract the stated UTC time zone (unknown stays null)"
+            + (", and rank images and log archives from 01-attachments.md, including archives whose inner log "
+               "filenames are referenced by the ticket. An unknown archive manifest is not evidence of irrelevance. "
+               "Account for whole multipart sets and the total download budget" if choose else ""))
     answer = _ask_ai(run, cfg, (f"Jira issue {run['issue']}. Read only the attached Jira ticket"
                                 + (" and the attachment list" if choose else "") + f" and follow understand.md to {task}. "
                                 "Do not inspect logs or source code."),
@@ -1218,6 +1370,8 @@ def step_understand(run, cfg, ex):
     answer = storage.strip_chat_wrappers(answer)
     _write(run, "02-understanding.md", answer)
     focus = _parse_focus(answer)
+    typed = normalize_windows((run.get("focus") or {}).get("extra_windows"))
+    focus = _clean_focus({**focus, "extra_windows": typed})  # ranges typed by hand survive a fresh AI reading
     if not choose:
         focus["attachments"] = None
     run["focus"] = focus
@@ -1237,8 +1391,13 @@ def step_understand(run, cfg, ex):
     else:
         notes.append(t("note.nowindow"))
     if choose and focus.get("attachments") is not None:
-        offered = {a["filename"].casefold() for a in _log_candidates(run)}
+        offered = {a["filename"].casefold() for a in _evidence_candidates(run)}
         notes.append(t("note.picks", n=sum(1 for pick in focus["attachments"] if pick["filename"].casefold() in offered)))
+    if choose:
+        picks, _ = _attachment_picks(run, focus=focus)
+        names, _ = _within_budget(run, picks, cfg.get("auto_download_max_mb") or 0)
+        planned = attachments.expand_archive_volumes(names, [a["filename"] for a in run.get("attachments") or []])
+        notes.append(t("note.evidence_plan", n=len(planned)))
     return " · ".join(notes)
 
 
@@ -1248,6 +1407,12 @@ def _parse_focus(answer):
 
 def _clean_focus(data):
     return normalize_focus(data)
+
+
+def _focus_windows(focus):
+    """The incident window (when set) followed by the extra ranges typed at step 2: [{time_start, time_end}]."""
+    main = {"time_start": focus.get("time_start"), "time_end": focus.get("time_end")}
+    return ([main] if main["time_start"] or main["time_end"] else []) + list(focus.get("extra_windows") or [])
 
 
 def _build_log_catalog(run, ex, force=False):
@@ -1336,7 +1501,7 @@ def step_log(run, cfg, ex):
     if not interactive:
         _acquire_logs(run, cfg, ex)
     if not run["inputs"]["log_files"]:
-        if interactive:
+        if interactive and not (run.get("gate_state") or {}).get("resolved"):
             raise NeedGate(t("err.no_logs_available"))
         raise Skip(t("note.skip_no_logs_found"))
     try:
@@ -1344,7 +1509,7 @@ def step_log(run, cfg, ex):
     except RuntimeError as exc:
         if interactive:
             raise NeedGate(str(exc))
-        raise
+        raise Skip(str(exc)) from exc
     source = run["inputs"]["source_dir"]
     options = _log_options(run, cfg["log_budget_tokens"])
     manual = options["mode"] == "manual"
@@ -1373,7 +1538,7 @@ def step_log(run, cfg, ex):
     tz = (run.get("gate_state") or {}).get("tz") or {}
     if not manual and focus["filter_mode"] == "window" and tz.get("mode") == "bypass":
         _log(run, t("log.tz_bypass"))
-        focus = _clean_focus({**focus, "time_start": None, "time_end": None})
+        focus = _clean_focus({**focus, "time_start": None, "time_end": None, "extra_windows": []})
     if manual:
         _path(run, "03-log-span.md").unlink(missing_ok=True)
         focus = _clean_focus({"time_start": options["time_start"] if options["time_enabled"] else None,
@@ -1392,10 +1557,16 @@ def step_log(run, cfg, ex):
             shift = tz.get("shift_minutes")
         unknown_zone = not focus.get("ticket_utc_offset") and shift is None and not tz
         ask_user = unknown_zone and run["inputs"].get("gate") in ("review", "manual")
-        alignment = _align_window(run, cfg, ex, files, focus, shift, ask_user)
+        # Every window is in the ticket's clock: the first one decides the alignment, all get its shift.
+        windows = _focus_windows(focus)
+        alignment = _align_window(run, cfg, ex, files, {**focus, **windows[0]}, shift, ask_user)
         if unknown_zone:
             _log(run, "⚠ " + t("log.tz_auto_unknown"))
-        focus = {**focus, "time_start": alignment["time_start"], "time_end": alignment["time_end"]}
+        moved = [{key: timealign.shift_clock(w[key], alignment["shift_minutes"]) for key in w} for w in windows]
+        focus = {**focus, **moved[0], "extra_windows": moved[1:]}
+        if moved[1:]:
+            _log(run, t("log.extra_windows", windows=", ".join(f"{w['time_start'] or '…'}–{w['time_end'] or '…'}"
+                                                                 for w in moved[1:])))
     out = _path(run, "03-log-brief.md")
     stats = logsleuth.slice_logs(files, out, catalog, focus, cfg["log_budget_tokens"], options, cancel=ex.check)
     _unreadable(run, stats.get("sources") or [])
@@ -1403,7 +1574,7 @@ def step_log(run, cfg, ex):
     fallback = False
     if not manual and stats.get("afterTime", 0) == 0 and window:
         _log(run, t("log.window_empty"))
-        stats = logsleuth.slice_logs(files, out, catalog, {**focus, "time_start": "", "time_end": ""},
+        stats = logsleuth.slice_logs(files, out, catalog, {**focus, "time_start": "", "time_end": "", "extra_windows": []},
                                     cfg["log_budget_tokens"], options, cancel=ex.check)
         window = None
         fallback = True
@@ -1415,6 +1586,8 @@ def step_log(run, cfg, ex):
         note += " · " + t("note.log_no_catalog")
     if window:
         note += f", {window['start']}–{window['end']}"
+        if len(stats.get("timeWindows") or []) > 1:
+            note += f" (+{len(stats['timeWindows']) - 1})"
         if alignment and alignment["shift_minutes"]:
             note += " (" + t("note.log_shift", shift=_shift_text(alignment["shift_minutes"])) + ")"
     elif fallback:
@@ -1523,6 +1696,50 @@ def _source_code_evidence(run, max_refs=12, context_lines=8):
     return "\n".join(out).rstrip() + "\n" if len(out) > 4 else ""
 
 
+def _image_files(run):
+    """Downloaded images (including archive members) are visual evidence, never LogSleuth input."""
+    found = set()
+    for a in run.get("attachments") or []:
+        path = Path(a["path"]) if a.get("path") else None
+        if path is None or not path.is_file():
+            continue
+        if _is_image(a):
+            found.add(path)
+        elif a.get("analyzed") and attachments.kind_of(a["filename"]) == "archive":
+            extracted = path.with_name(path.name + "_extracted")
+            if extracted.is_dir():
+                found.update(p for p in extracted.rglob("*") if p.is_file() and p.suffix.lower() in attachments.IMAGE_EXT)
+    return sorted(found)
+
+
+def _image_brief(run, cfg, ex, images):
+    """One image + ticket + instruction fits M365's three-attachment limit.
+
+    Summaries, rather than a potentially unbounded pile of screenshots, enter final analysis.
+    A failed image read is explicit and never blocks useful ticket/log evidence.
+    """
+    sections = ["# Visual evidence", ""]
+    per_image = max(240, min(2000, 24000 // len(images)))
+    for image in images:
+        ex.check()
+        try:
+            answer = _ask_ai(run, cfg, (f"Jira issue {run['issue']}. Inspect the attached image {image.name} "
+                                       "following image-analysis.md. Return visible facts only, at most "
+                                       f"{per_image} characters. {_write_in()}"),
+                             [_path(run, "01-jira.md"), image, _instruction("image-analysis.md")],
+                             run_dir(run["id"]), session_id=run["session_id"], retries=0)
+            ex.check()
+            summary = storage.strip_chat_wrappers(answer)[:per_image]
+        except Cancelled:
+            raise
+        except Exception as exc:
+            ex.check()
+            _log(run, f"image {image.name}: {exc}")
+            summary = "Image analysis unavailable; no visual claims may be made for this image."
+        sections += [f"## {image.name}", "", summary, ""]
+    return _write(run, "05-image-evidence.md", "\n".join(sections))
+
+
 def step_analyze(run, cfg, ex):
     if not _path(run, "01-jira.md").exists():
         raise RuntimeError(t("err.need_jira"))
@@ -1544,10 +1761,19 @@ def step_analyze(run, cfg, ex):
     if source_evidence:
         _write(run, source_evidence_path.name, source_evidence)
         files.append(source_evidence_path)
+    images = _image_files(run)
+    _path(run, "05-image-evidence.md").unlink(missing_ok=True)
+    if len(images) > 1:
+        files.append(_image_brief(run, cfg, ex, images))
+    else:
+        files.extend(images)
     files.append(_instruction("ticket-analysis.md"))
     names = ", ".join(f.name for f in files[:-1])
     answer = _ask_ai(run, cfg, (f"Jira issue {run['issue']}. Apply the attached instruction ticket-analysis.md to the attached "
-                          f"evidence ({names}) and return the final analysis in Markdown only. {_write_in()}"),
+                                  f"evidence ({names}) and return the final analysis in Markdown only. "
+                                  + ("Use the attached images or 05-image-evidence.md as visual evidence: read visible error text, timestamps, "
+                                      "versions and UI state. Distinguish observed image facts from hypotheses; do not claim "
+                                      "that screenshots prove unseen log events. " if images else "") + _write_in()),
                     files, run_dir(run["id"]), session_id=run["session_id"], effort="high", context="long_context")
     ex.check()
     _write(run, "05-analysis.md", storage.strip_chat_wrappers(answer))
@@ -1757,11 +1983,16 @@ def _wants_logs(run):
     return bool(inputs["log_files"]) or (bool(inputs.get("auto_attachments")) and bool(_log_candidates(run)))
 
 
+def _wants_evidence(run):
+    return bool(run["inputs"]["log_files"]) or (bool(run["inputs"].get("auto_attachments"))
+                                              and bool(_evidence_candidates(run)))
+
+
 APPLICABLE = {
     "jira": lambda r: True,
     # Manual gate: the user types the time window, so the AI triage is not asked.
-    "understand": lambda r: r["inputs"].get("gate") != "manual" and _wants_logs(r),
-    "log": lambda r: _wants_logs(r) and not (r.get("gate_state") or {}).get("skip_logs"),
+    "understand": lambda r: r["inputs"].get("gate") != "manual" and _wants_evidence(r),
+    "log": lambda r: _wants_evidence(r) and not (r.get("gate_state") or {}).get("skip_logs"),
     "graph": lambda r: bool(r["inputs"].get("source_dir")) and bool(r["inputs"].get("use_codegraph", True)),
     "analyze": lambda r: True, "format": lambda r: True, "collab": lambda r: True,
     "infographic": lambda r: bool(r["inputs"].get("use_infographic", True)),

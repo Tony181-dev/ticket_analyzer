@@ -283,8 +283,14 @@ class SettingsValidationTest(unittest.TestCase):
             loaded = settings.load()
             self.assertEqual(loaded["default_gate"], "skip")
             self.assertEqual(loaded["ai_retries"], 3, "an out-of-range number is clamped")
-            self.assertEqual(loaded["axel_connections"], 30)
+            self.assertEqual(loaded["axel_connections"], settings.DEFAULTS["axel_connections"])
             self.assertEqual(loaded["lang"], "en")
+            # 30 was the default before v5 (stored as if chosen): it moves to the new default; a 30 saved
+            # under v5 is the user's own choice and stays.
+            paths.SETTINGS_FILE.write_text(json.dumps({"settings_version": 4, "axel_connections": 30}), encoding="utf-8")
+            self.assertEqual(settings.load()["axel_connections"], 8)
+            paths.SETTINGS_FILE.write_text(json.dumps({"settings_version": 5, "axel_connections": 30}), encoding="utf-8")
+            self.assertEqual(settings.load()["axel_connections"], 30)
             paths.SETTINGS_FILE.write_text("[]", encoding="utf-8")
             self.assertEqual(settings.load()["ai_mode"], "m365")
         finally:

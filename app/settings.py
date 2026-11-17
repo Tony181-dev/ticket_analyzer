@@ -13,7 +13,7 @@ DEFAULTS = {
     "copilot_model": "gpt-6-luna",     # "" = Copilot CLI's own default (auto)
     "download_dir": "",                # "" = ~/Downloads/TicketAnalyzer/<ISSUE>
     "axel_command": "",                 # "" = axel bundled with the app, then axel on PATH
-    "axel_connections": 30,            # parallel connections per attachment
+    "axel_connections": 8,             # parallel connections per attachment (fewer for small files)
     "refine_model": "",                # small model for Step "format" refine; "" = CLI default
     "collab_space_key": "~",
     "collab_parent_id": "",
@@ -24,14 +24,14 @@ DEFAULTS = {
     "port": 6969,
     # Defaults for a new ticket (each run keeps its own copy and can override them).
     "default_gate": "skip",            # "skip" | "review" | "manual": how evidence decisions are made
-    "default_use_attachments": True,   # use the ticket's own log attachments
+    "default_use_attachments": True,   # use the ticket's images and log/archive attachments
     "default_use_codegraph": True,
     "default_use_infographic": True,
-    "auto_download_max_mb": 2000,      # Skip mode: total size the AI may download per ticket; 0 = no limit
+    "auto_download_max_mb": 2000,      # Auto downloads / Review proposal: total evidence bytes; 0 = no limit
     "ai_retries": 1,                   # extra attempts after a transient AI failure
     "assistant_proactive": True,       # chat bubble: auto-scan when the evidence gate opens or a step fails
 }
-VERSION = 4
+VERSION = 5
 M365_MODELS = ["GPT-5.6 Sol Think Deeper", "GPT-5.6 Sol Think", "GPT 6 Luna", "Claude Sonnet", "Claude Opus"]
 # Copilot CLI `--model` ids (CLI command reference, "Supported models"). The app default stays gpt-6-luna;
 # the CLI's own default is claude-sonnet-5.5, which "auto" may pick. Any other id can be typed in the UI.
@@ -80,6 +80,8 @@ def _read():
             stored["m365_model"] = DEFAULTS["m365_model"]
         if not stored.get("copilot_model"):
             stored["copilot_model"] = DEFAULTS["copilot_model"]
+    if stored.get("settings_version", 1) < 5 and stored.get("axel_connections") == 30:
+        stored["axel_connections"] = DEFAULTS["axel_connections"]  # the old default, not a user choice
     for key, value in stored.items():
         if key not in DEFAULTS:
             continue

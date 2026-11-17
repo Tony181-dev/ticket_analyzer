@@ -22,6 +22,8 @@ _END = "===== END FILE: {} ====="
 
 
 def _is_text(file):
+    if Path(file).suffix.lower() in {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"}:
+        return False  # an image need not contain a NUL in its first 8 KB
     try:
         with open(file, "rb") as handle:
             return b"\0" not in handle.read(8192)

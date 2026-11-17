@@ -41,7 +41,7 @@ DOCTOR_TTL = 90            # seconds a doctor result is reused
 STEP_IDS = list(pipeline.ORDER)
 SEVERITIES = ("critical", "high", "medium", "low")
 RUN_ACTIONS = {"download_attachments", "resolve_gate", "resolve_timezone", "run_steps", "log_scan", "update_inputs"}
-RUN_INPUT_TYPES = {"source_dir": str, "download_dir": str, "gate": str, "auto_attachments": bool,
+RUN_INPUT_TYPES = {"source_dir": str, "download_dir": str, "data_dir": str, "gate": str, "auto_attachments": bool,
                    "use_codegraph": bool, "use_infographic": bool, "continue_on_optional_error": bool,
                    "auto_publish_to_collab": bool, "log_shift_minutes": (int, type(None))}
 SETTING_BLOCKLIST = {"port"}
@@ -58,8 +58,9 @@ SCAN_REQUESTS = {
          "for the open run, attachments worth downloading or skipping (and why), inputs or settings to adjust, "
          "and any Ticket Analyzer defect worth a bug ticket. Propose actions."),
     "gate": ("The evidence gate of the open run is waiting for a decision. Recommend exactly which attachments to "
-             "download (exact file names, mind split 7z volumes, sizes and the download cap) and the incident time "
-             "window / log clock shift, or continuing without logs when nothing is useful. Propose one resolve_gate "
+             "download (exact file names, whole multipart sets, total sizes and the download cap; prioritize images) "
+             "and the normalized incident time window / UTC time zone, or continuing without logs when nothing "
+             "is useful. An inner log filename may refer to a ZIP with a different name. Propose one resolve_gate "
              "action."),
     "tz": ("The ticket does not state the time zone of its incident time, so the Log step waits for the user's choice "
            "before slicing the logs. Using 'Time zone decision' in the snapshot (each log file's first/last timestamp, "
@@ -418,8 +419,13 @@ def validate_action(raw, run):
             shift = raw.get("shift_minutes")
             if isinstance(shift, (int, float)) and not isinstance(shift, bool) and -840 <= shift <= 840:
                 action["shift_minutes"] = int(shift)
+            if "ticket_utc_offset" in raw:
+                offset = raw["ticket_utc_offset"]
+                if offset not in (None, "") and parse_offset(offset) is None:
+                    return None
+                action["ticket_utc_offset"] = format_offset(parse_offset(offset)) or None
             if not action["names"] and not action["skip_logs"] and not any(
-                    k in action for k in ("time_start", "time_end", "shift_minutes")):
+                    k in action for k in ("time_start", "time_end", "shift_minutes", "ticket_utc_offset")):
                 return None
         elif kind == "resolve_timezone":
             action["mode"] = raw.get("mode") if raw.get("mode") in pipeline.TZ_MODES else None
@@ -524,7 +530,8 @@ def _execute(action, run, opener):
         focus = run.get("focus") or {}
         ex.resolve_gate(run["id"], action.get("names") or [], None,
                         action.get("time_start", focus.get("time_start")), action.get("time_end", focus.get("time_end")),
-                        action["shift_minutes"] if "shift_minutes" in action else ..., action.get("skip_logs", False))
+                        action["shift_minutes"] if "shift_minutes" in action else ..., action.get("skip_logs", False),
+                        **({"ticket_utc_offset": action["ticket_utc_offset"]} if "ticket_utc_offset" in action else {}))
         return t("asst.res.gate")
     if kind == "resolve_timezone":
         ex.resolve_timezone(run["id"], action["mode"], action.get("shift_minutes"), None, None,

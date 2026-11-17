@@ -29,6 +29,7 @@ from . import mcp, paths, settings
 
 LOG_EXT = {".log", ".txt", ".dlt", ".out", ".slog", ".slog2", ".trace", ".err", ".jsonl", ".ndjson", ".json", ".gz", ".bz2", ".xz", ".zst", ".csv"}
 ARCHIVE_EXT = (".zip", ".tar", ".tgz", ".tar.gz", ".tar.bz2", ".tbz2", ".tar.xz", ".7z", ".rar")
+IMAGE_EXT = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"}
 SKIP_EXT = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".mp4", ".mov", ".avi", ".mkv", ".pdf", ".doc", ".docx",
             ".xls", ".xlsx", ".ppt", ".pptx", ".exe", ".dll", ".apk", ".so", ".bin", ".img"}
 MAX_EXTRACT_BYTES = 8 * 1024 ** 3  # zip-bomb guard: 8 GB unpacked per archive
@@ -50,19 +51,47 @@ def is_7z_volume_continuation(name):
     return bool(volume and int(volume[1]) > 1)
 
 
-def expand_7z_volumes(names, available):
-    """If a split 7z part is selected, include every matching volume attachment."""
+def archive_volume(name):
+    """(group key, 1-based index) for numbered 7z/zip and partNN.rar volumes."""
+    leaf = str(name).replace("\\", "/").rsplit("/", 1)[-1]
+    match = re.fullmatch(r"(.+\.(?:7z|zip))\.(\d{3,})", leaf, re.I)
+    if match:
+        return match[1].casefold(), int(match[2])
+    match = re.fullmatch(r"(.+)\.part(\d+)\.rar", leaf, re.I)
+    return (match[1].casefold() + ".part.rar", int(match[2])) if match else None
+
+
+def is_volume_continuation(name):
+    volume = archive_volume(name)
+    return bool(volume and volume[1] > 1)
+
+
+def expand_archive_volumes(names, available):
+    """Selecting any split archive part selects its entire available set."""
     groups = {}
     for candidate in available:
-        volume = _split_7z_volume(candidate)
+        volume = archive_volume(candidate)
         if volume:
             groups.setdefault(volume[0].casefold(), set()).add(str(candidate))
     expanded = set(names)
     for name in tuple(expanded):
-        volume = _split_7z_volume(name)
+        volume = archive_volume(name)
         if volume:
             expanded.update(groups.get(volume[0].casefold(), ()))
     return expanded
+
+
+def expand_7z_volumes(names, available):
+    """Compatibility alias; also supports numbered ZIP and multipart RAR."""
+    return expand_archive_volumes(names, available)
+
+
+def complete_volume_set(names):
+    groups = {}
+    for name in names:
+        if volume := archive_volume(name):
+            groups.setdefault(volume[0], set()).add(volume[1])
+    return all(min(indices) == 1 and len(indices) == max(indices) for indices in groups.values())
 
 
 def default_folder(issue):
@@ -71,9 +100,11 @@ def default_folder(issue):
 
 def kind_of(name):
     low = name.lower()
-    if low.endswith(ARCHIVE_EXT) or is_7z_volume(name):
+    if low.endswith(ARCHIVE_EXT) or archive_volume(name):
         return "archive"
     ext = Path(low).suffix
+    if ext in IMAGE_EXT:
+        return "image"
     if ext in LOG_EXT or re.search(r"\.\d+$", low):  # rotated logs: app.log.1
         return "log"
     return "other"
@@ -82,7 +113,7 @@ def kind_of(name):
 def is_log_file(path):
     p = Path(path)
     low = p.name.lower()
-    if is_7z_volume(low):
+    if archive_volume(low):
         return False
     if p.suffix.lower() in SKIP_EXT:
         return False
@@ -207,7 +238,12 @@ def list_rest(issue):
 
 
 # ---------------------------------------------------------------- download
-AXEL_CONNECTIONS = 30
+AXEL_CONNECTIONS = 8           # per attachment; dozens mostly buy connection resets from corporate servers
+AXEL_MIN_BYTES = 1024 ** 2     # below this one HTTP stream is as fast as starting axel
+AXEL_PART_BYTES = 512 * 1024   # each axel connection gets at least this much of the file
+# axel 2.4 waits 20 s before it reconnects a connection the server reset (30 connections on a busy
+# server: 20 MB in 19 s instead of 1 s). It reads $HOME/.axelrc, so the app hands it its own.
+AXEL_RC = "reconnect_delay = 1\nconnection_timeout = 30\nbuffer_size = 65536\n"
 _AXEL_PERCENT = re.compile(r"\[\s*(\d{1,3})%\]")
 _AXEL_BANNER = re.compile(r"axel\s+(?:version\s+)?v?\d+\.\d+|usage:\s*axel", re.I)
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -244,11 +280,60 @@ def axel_path():
     return None
 
 
+def axel_https(exe):
+    """axel learned HTTPS in 2.5; the bundled 2.4 speaks plain HTTP (and FTP) only."""
+    m = re.search(r"(\d+)\.(\d+)", axel_version(exe) or "")
+    return bool(m) and (int(m.group(1)), int(m.group(2))) >= (2, 5)
+
+
 def _connections():
     try:
         return max(1, min(64, int(settings.load().get("axel_connections") or AXEL_CONNECTIONS)))
     except (TypeError, ValueError):
         return AXEL_CONNECTIONS
+
+
+def _axel_env():
+    """axel's environment: HOME holds the app's .axelrc; cygwin stays quiet about Windows paths."""
+    home = paths.DATA / "axel"
+    rc = home / ".axelrc"
+    try:
+        if not rc.is_file() or rc.read_text(encoding="utf-8") != AXEL_RC:
+            home.mkdir(parents=True, exist_ok=True)
+            rc.write_text(AXEL_RC, encoding="utf-8", newline="\n")
+    except OSError:
+        pass  # axel still works on its own defaults
+    return {**os.environ, "HOME": str(home), "CYGWIN": "nodosfilewarning"}
+
+
+def _probe(url, headers, timeout=30):
+    """(final URL after redirects, total bytes or 0, Range support True/False/None=unknown) from a
+    one-byte ranged GET. axel 2.4 cannot follow a relative redirect, so it is given the final URL."""
+    try:
+        with _open(url, {**headers, "Range": "bytes=0-0"}, timeout=timeout) as r:
+            final, ranged = r.geturl(), r.status == 206
+            total = re.search(r"/\s*(\d+)\s*$", r.headers.get("Content-Range") or "")
+            size = int(total.group(1)) if total else 0 if ranged else int(r.headers.get("Content-Length") or 0)
+            return final, size, ranged
+    except Exception:
+        return url, 0, None
+
+
+def _axel_plan(axel, url, headers, declared, left):
+    """How axel fetches this attachment: {url, size, connections}, or (None, why) when one plain HTTP
+    stream is as fast or the only safe way."""
+    final, size, ranged = _probe(url, headers)
+    size = size or declared or 0
+    if ranged is False:
+        return None, "no Range support"
+    if size and size < AXEL_MIN_BYTES:
+        return None, "small file"
+    if left is not None and (not size or size > left):
+        return None, "download budget"  # the bounded HTTP stream enforces the cap byte by byte
+    if urllib.parse.urlsplit(final).scheme.lower() not in (("http", "https") if axel_https(axel) else ("http",)):
+        return None, "HTTPS needs axel 2.5+"
+    connections = _connections() if not size else max(1, min(_connections(), size // AXEL_PART_BYTES))
+    return {"url": final, "size": size, "connections": connections}, ""
 
 
 def _redact(text):
@@ -265,13 +350,17 @@ def _discard(*files):
                 time.sleep(0.12)
 
 
-def _fetch_http(url, headers, target, cancel, report):
+def _fetch_http(url, headers, target, cancel, report, max_bytes=None):
     part = target.with_name(target.name + ".part")
     try:
         with _open(url, headers, timeout=120) as r, open(part, "wb") as f:
             total, got = int(r.headers.get("Content-Length") or 0), 0
-            while chunk := r.read(256 * 1024):
+            if max_bytes is not None and total > max_bytes:
+                raise RuntimeError("attachment exceeds remaining download budget")
+            while chunk := r.read(min(256 * 1024, max_bytes - got + 1) if max_bytes is not None else 256 * 1024):
                 cancel()
+                if max_bytes is not None and got + len(chunk) > max_bytes:
+                    raise RuntimeError("attachment exceeds remaining download budget")
                 f.write(chunk)
                 got += len(chunk)
                 if total:
@@ -282,15 +371,18 @@ def _fetch_http(url, headers, target, cancel, report):
         raise
 
 
-def _fetch_axel(axel, url, headers, target, cancel, report, expected=0):
+def _fetch_axel(axel, url, headers, target, cancel, report, expected=0, connections=None):
     part = target.with_name(target.name + ".part")
     state = part.with_name(part.name + ".st")
     _discard(part, state)
-    args = [axel, "-n", str(_connections())]
+    # -a: one "[ 45%] [...] [ 2.9MB/s] [00:06]" line per update. The size of the file on disk says
+    # nothing about progress: every connection writes at its own offset, so it jumps to ~100% at once.
+    args = [axel, "-a", "-n", str(connections or _connections())]
     for key, value in headers.items():
         args += ["-H", f"{key}: {value}"]
     proc = subprocess.Popen(args + ["-o", str(part), url], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                            cwd=str(target.parent), creationflags=_NO_WINDOW)
+                            stdin=subprocess.DEVNULL, cwd=str(target.parent), env=_axel_env(),
+                            creationflags=_NO_WINDOW)
     tail = []
 
     def drain():  # axel redraws its progress line with \r, so read raw chunks rather than lines
@@ -299,22 +391,20 @@ def _fetch_axel(axel, url, headers, target, cancel, report, expected=0):
             tail.append(text)
             del tail[:-40]
             for m in _AXEL_PERCENT.finditer(text):
-                report(min(100, int(m.group(1))))
+                report(min(99, int(m.group(1))))
     reader = threading.Thread(target=drain, daemon=True)
     reader.start()
     try:
         while proc.poll() is None:
             cancel()
-            if expected:  # axel does not always print a percentage; the file on disk shows the real progress
-                try:
-                    report(min(99, part.stat().st_size * 100 // expected))
-                except OSError:
-                    pass
             time.sleep(0.2)
         reader.join(2)
         if proc.returncode != 0:
             detail = _redact("".join(tail)).strip().splitlines()[-3:]
             raise RuntimeError(f"axel exited with code {proc.returncode}: {' '.join(detail)}")
+        got = part.stat().st_size
+        if expected and got != expected:
+            raise RuntimeError(f"axel wrote {got:,} B, expected {expected:,} B")
         part.replace(target)
         _discard(state)
     except BaseException:
@@ -327,28 +417,36 @@ def _fetch_axel(axel, url, headers, target, cancel, report, expected=0):
             proc.wait()
         _discard(part, state)
         raise
+    finally:
+        reader.join(2)  # the pipe hits EOF once axel is gone
+        proc.stdout.close()
 
 
-def download(issue, items, folder, log=print, cancel=lambda: None, progress=lambda *a: None):
+def download(issue, items, folder, log=print, cancel=lambda: None, progress=lambda *a: None, max_bytes=None):
     """Download `items` (normalized dicts) into `folder` with the Jira credentials; returns {filename: path}.
 
     progress(phase, index, total, name, pct=None) per file: "download" (started / pct), then "downloaded",
     "present" (same size already on disk) or "failed"; a final "download" with total/total and no name.
 
     Like the Ez Collab-Jira extension: the attachment URL is fetched with an Authorization header, using
-    multi-connection axel when it is installed and a plain HTTP stream otherwise.
+    multi-connection axel (see _axel_plan) and a plain HTTP stream when axel cannot run or fails.
     """
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
     base, headers = _jira_auth()
     axel = axel_path()
+    log(f"axel: {axel} (≤{_connections()} connections)" if axel
+        else "axel: không dùng được / not usable → HTTP")
     done, errors = {}, []
+    left = max_bytes
     for n, a in enumerate(items):
         cancel()
         name = a["filename"]
         progress("download", n, len(items), name)
         target = folder / _safe_name(name)
         if target.exists() and a["size"] and target.stat().st_size == a["size"]:
+            if left is not None:
+                left = max(0, left - target.stat().st_size)
             log(f"= {name} (đã có / already present)")
             done[name] = target
             progress("present", n, len(items), name, 100)
@@ -366,12 +464,25 @@ def download(issue, items, folder, log=print, cancel=lambda: None, progress=lamb
                 last[:] = [time.monotonic(), pct]
                 progress("download", n, len(items), name, pct)
         problems = []
-        for how in (["axel"] if axel else []) + ["http"]:
+        # axel first. Under a byte cap it only starts once the server confirmed the real size fits what
+        # is left; otherwise the bounded HTTP stream enforces the cap even when Jira's metadata is wrong.
+        for how in ("axel", "http"):
             try:
                 if how == "axel":
-                    _fetch_axel(axel, url, headers, target, cancel, report, a["size"])
+                    if not axel:
+                        continue
+                    plan, why = _axel_plan(axel, url, headers, a["size"], left)
+                    if not plan:
+                        if why != "small file":
+                            log(f"  {name}: HTTP ({why})")
+                        continue
+                    started = time.monotonic()
+                    _fetch_axel(axel, plan["url"], headers, target, cancel, report, plan["size"], plan["connections"])
+                    how = f"axel ×{plan['connections']}, {time.monotonic() - started:.1f}s"
                 else:
-                    _fetch_http(url, headers, target, cancel, report)
+                    _fetch_http(url, headers, target, cancel, report, max_bytes=left)
+                if left is not None:
+                    left -= target.stat().st_size
                 log(f"↓ {name} ({target.stat().st_size:,} B) [{how}]")
                 done[name] = target
                 progress("downloaded", n, len(items), name, 100)
@@ -379,6 +490,8 @@ def download(issue, items, folder, log=print, cancel=lambda: None, progress=lamb
             except Exception as exc:
                 cancel()  # re-raises when the user pressed Stop
                 problems.append(f"{how}: {_redact(exc)}")
+                if how == "axel":
+                    log(f"⚠ {name}: axel → HTTP ({_redact(exc)})")
         else:
             errors.append(f"{name}: " + " | ".join(problems))
             log(f"✗ {errors[-1]}")
@@ -390,6 +503,34 @@ def download(issue, items, folder, log=print, cancel=lambda: None, progress=lamb
 
 
 # ---------------------------------------------------------------- extraction
+def _volume_reader(archive, digits):
+    import multivolumefile
+
+    base = archive.with_suffix("")
+    pattern = re.compile(re.escape(base.name) + r"\.\d{" + str(digits) + r"}", re.I)
+
+    class NumericVolumes(multivolumefile.MultiVolume):
+        def _glob_files(self, basename):
+            # The library's broad basename.* glob also matches .001_extracted/ and .part files.
+            return sorted((p for p in base.parent.iterdir() if p.is_file() and pattern.fullmatch(p.name)),
+                          key=lambda p: int(p.suffix[1:]))
+
+        def read(self, size=-1):
+            # zipfile expects read(n) to cross volume boundaries; MultiVolume.read(n) does not.
+            remaining = self._positions[-1] - self.tell()
+            remaining = remaining if size < 0 else min(size, remaining)
+            chunks = []
+            while remaining > 0:
+                chunk = super().read(remaining)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            return b"".join(chunks)
+
+    return NumericVolumes(base, mode="rb", ext_digits=digits)
+
+
 def _inside(root, member):
     root = Path(root).resolve()
     dest = (root / member).resolve()
@@ -426,7 +567,7 @@ def _extract_7z(archive, out, cancel):
             import multivolumefile
         except ImportError as exc:
             raise RuntimeError("split 7z extraction requires multivolumefile") from exc
-        volume_stream = multivolumefile.MultiVolume(archive.with_suffix(""), mode="rb", ext_digits=len(index))
+        volume_stream = _volume_reader(archive, len(index))
         source = volume_stream
 
     class CancelCallback(ExtractCallback):
@@ -475,9 +616,13 @@ def extract(archive, log=print, cancel=lambda: None, dest=None):
         return out
     out.mkdir(parents=True, exist_ok=True)
     low = archive.name.lower()
+    volume_stream = None
     try:
-        if low.endswith(".zip") or zipfile.is_zipfile(archive):
-            with zipfile.ZipFile(archive) as z:
+        if re.search(r"\.zip\.\d{3,}$", low):
+            width = len(archive.suffix) - 1
+            volume_stream = _volume_reader(archive, width)
+        if volume_stream is not None or low.endswith(".zip") or zipfile.is_zipfile(archive):
+            with zipfile.ZipFile(volume_stream if volume_stream is not None else archive) as z:
                 total = sum(i.file_size for i in z.infolist())
                 if total > MAX_EXTRACT_BYTES:
                     raise RuntimeError(f"archive too large when unpacked ({total:,} B)")
@@ -529,6 +674,9 @@ def extract(archive, log=print, cancel=lambda: None, dest=None):
         cancel()  # re-raises when the user pressed Stop
         log(f"✗ {archive.name}: {exc}")
         return None
+    finally:
+        if volume_stream is not None:
+            volume_stream.close()
 
 
 def logs_in(path):
@@ -536,18 +684,23 @@ def logs_in(path):
     if p.is_file():
         return [p] if is_log_file(p) else []
     return sorted(f for f in p.rglob("*")
-                  if f.is_file() and f.stat().st_size > 0 and not is_7z_volume_continuation(f.name)
+                  if f.is_file() and f.stat().st_size > 0 and not is_volume_continuation(f.name)
                   and (is_log_file(f) or kind_of(f.name) == "archive"))
 
 
-def collect(issue, items, analyze_names, folder, log=print, cancel=lambda: None, progress=lambda *a: None):
+def collect(issue, items, analyze_names, folder, log=print, cancel=lambda: None, progress=lambda *a: None,
+            max_bytes=None):
     """Download `items`; for names in `analyze_names` extract and return the log files found."""
-    files = download(issue, items, folder, log, cancel, progress)
+    files = download(issue, items, folder, log, cancel, progress, max_bytes=max_bytes)
     logs = []
-    todo = [n for n in files if n in analyze_names and not is_7z_volume_continuation(n)]
+    todo = [n for n in files if n in analyze_names and not is_volume_continuation(n)]
     for k, name in enumerate(todo):
         path = files[name]
         cancel()
+        group = expand_archive_volumes([name], [a["filename"] for a in items])
+        if not group.issubset(files) or not complete_volume_set(group):
+            log(f"✗ {name}: incomplete multipart archive; extraction skipped")
+            continue
         progress("extract", k, len(todo), name)
         if kind_of(name) == "archive":
             out = extract(path, log, cancel)

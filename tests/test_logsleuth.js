@@ -38,6 +38,18 @@ try {
   assert.throws(() => budgetLimit(-1));
   assert.strictEqual(budgetLimit(1000000), 50000);
 
+  // Extra windows: a line inside ANY window is kept; the main window stays the first one reported.
+  const multi = readRecords([b, a], 'auto', { timeStart: '23:59:59.800', timeEnd: '00:00:00.200',
+    timeWindows: [{ start: '11:59:00', end: '12:01:00' }, { start: '', end: '' }] });
+  assert.strictEqual(multi.keptLines, 4, 'the 12:00 line joins the three around midnight');
+  assert.deepStrictEqual(multi.timeWindows.map((w) => [w.start, w.end]), [['23:59:59', '00:00:00'], ['11:59:00', '12:01:00']]);
+  assert.strictEqual(multi.timeWindow.start, '23:59:59');
+  const onlyExtra = readRecords([b, a], 'auto', { timeWindows: [{ start: '22:59:00', end: '23:01:00' }] });
+  assert.strictEqual(onlyExtra.keptLines, 1, 'an extra window alone also filters');
+  const multiBrief = renderBoundedBrief(sliceLog([b, a], catalog, { timeStart: '23:59:59.800', timeEnd: '00:00:00.200',
+    timeWindows: [{ start: '11:59:00', end: '12:01:00' }], budgetTokens: 4000 }), { budgetTokens: 4000 });
+  assert(multiBrief.text.includes('`11:59:00` → `12:01:00`'), 'the brief names every window');
+
   // Metadata alone may exceed the cap; it must not evict all real evidence.
   sliced.stats.fired[0].file = 'very-long-name'.repeat(1000);
   const compact = renderBoundedBrief(sliced, { budgetTokens: 2000 });

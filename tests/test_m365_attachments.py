@@ -81,6 +81,13 @@ class PackTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "3"):
             ai.m365_attachments(files, self.dir)
 
+    def test_image_without_nul_bytes_is_not_mistaken_for_text(self):
+        image = self.make("shot.jpg", data=b"\xff\xd8" + b"x" * 9000)
+        self.assertFalse(ai._is_text(image))
+        files = [self.make("a.md"), image, self.make("b.md"), self.make("instruction.md")]
+        sent, _ = ai.m365_attachments(files, self.dir)
+        self.assertIn(image, sent)
+
     def test_m365_ask_sends_at_most_three_files_and_the_note(self):
         files = self.analyze_files()
         with patch.object(ai.m365_worker, "chat", return_value="answer") as chat:

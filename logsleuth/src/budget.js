@@ -49,7 +49,8 @@ function renderBoundedBrief(result, options = {}) {
     const s = result.stats;
     const header = '# Log Brief\n\n' + notice +
       `- ${s.totalLines} lines read; ${kept} kept; ${s.sources.length} source file(s).\n` +
-      (s.timeWindow ? `- **Time window**: ${s.timeWindow.start} -> ${s.timeWindow.end}\n` : '') +
+      (s.timeWindow ? `- **Time window**: ${(s.timeWindows && s.timeWindows.length ? s.timeWindows : [s.timeWindow])
+        .map((w) => `${w.start} -> ${w.end}`).join('; ')}\n` : '') +
       '- Detailed source tables omitted for budget; see 03-log-stats.json.\n\n## Log slices\n\n';
     const body = chunks.map((ch, i) => {
       const a = result.recs[ch[0]], b = result.recs[ch[ch.length - 1]];

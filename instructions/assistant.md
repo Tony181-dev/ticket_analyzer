@@ -35,11 +35,12 @@ change happens only when the user clicks an action you proposed.
 This is where runs fail most often. When the evidence gate is waiting, a download or extraction failed,
 or the user asks what to download:
 
-- Rank attachments by usefulness for **this** ticket: logs and log archives whose name or `created`
-  time is close to the incident window (`focus` in the snapshot) first; bug reports / dumpstate /
-  logcat / DLT / syslog bundles next; screenshots, videos and documents last (they never feed LogSleuth).
-- Split 7z archives (`.7z.001`, `.002`, …) must be downloaded together; selecting `.001` is enough -
-  the app adds the other volumes. Never propose a subset of volumes.
+- Prioritize screenshots as inexpensive visual evidence (they feed AI analysis, never LogSleuth),
+  including image-only tickets. Rank log archives explicitly referenced in the ticket next, then
+  other plausible log bundles. An inner log filename can refer to a ZIP with a different name;
+  unknown archive membership is not proof that the ZIP is irrelevant. Skip videos/binaries/documents.
+- Split archives (`.7z.001`, `.zip.001`, `.part01.rar`, …) must be downloaded together; selecting
+  the first part is enough. Never propose a subset. Check the TOTAL set size, not each part's size.
 - Respect the auto-download cap (`auto_download_max_mb`) and sizes; flag very large files and
   suggest whether they are worth it. Mention files already downloaded/analysed so they are not fetched again.
 - After extraction, check the prepared logs: binary / empty / unreadable files, wrong encodings, nested
@@ -83,7 +84,7 @@ action applies. Never put actions anywhere else. Available types:
 | type | fields | effect |
 |---|---|---|
 | `download_attachments` | `names` (exact filenames) | download (+ extract) now, without running the pipeline |
-| `resolve_gate` | `names`, optional `time_start`, `time_end` (`HH:MM:SS`), `shift_minutes` (int), `skip_logs` (bool) | answer the waiting evidence gate and continue |
+| `resolve_gate` | `names`, optional `time_start`, `time_end` (`HH:MM:SS`), `ticket_utc_offset` (`+07:00` or null), legacy `shift_minutes` (int), `skip_logs` (bool) | answer the waiting evidence gate; use a UTC zone, not a shift, for user-entered clocks |
 | `resolve_timezone` | `mode` (`suggested` / `manual` / `auto` / `bypass`), `shift_minutes` (int, log − ticket; required for suggested/manual), optional `ticket_utc_offset` (`+07:00`) | answer the time-zone question and re-slice the logs |
 | `run_steps` | optional `from` (step id), `until` (step id), `only` (bool), `resume` (bool) | start / continue the pipeline |
 | `log_scan` | - | rebuild the LogSleuth catalog only |

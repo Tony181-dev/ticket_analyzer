@@ -734,12 +734,17 @@ function readRecords(files, forced = 'auto', opts = {}) {
   });
   stated.sort((a, b) => a.mtime - b.mtime || a.file.localeCompare(b.file));
 
-  // --- time window -------------------------------------------------------
-  const startMs = parseClock(opts.timeStart);
-  const endMs = parseClock(opts.timeEnd);
-  const timeOn = startMs !== null || endMs !== null;
-  const lo = timeOn ? (startMs === null ? 0 : startMs) : null;
-  const hi = timeOn ? (endMs === null ? 86400000 - 1 : endMs) : null;
+  // --- time windows ------------------------------------------------------
+  // timeStart/timeEnd is the main window; opts.timeWindows [{start, end}] adds more. A record inside ANY
+  // window is kept. An open end means start/end of the day.
+  const ranges = [{ start: opts.timeStart, end: opts.timeEnd }, ...(opts.timeWindows || [])]
+    .map((w) => [parseClock(w && w.start), parseClock(w && w.end)])
+    .filter(([a, b]) => a !== null || b !== null)
+    .map(([a, b]) => [a === null ? 0 : a, b === null ? 86400000 - 1 : b]);
+  const timeOn = ranges.length > 0;
+  const lo = timeOn ? ranges[0][0] : null;
+  const hi = timeOn ? ranges[0][1] : null;
+  const inAny = (c) => ranges.some(([a, b]) => inWindow(c, a, b));
 
   const records = [];
   const sources = [];
@@ -765,7 +770,7 @@ function readRecords(files, forced = 'auto', opts = {}) {
         // Untimestamped lines (stack frames, banners) inherit the last clock
         // seen, so a trace is never cut in half by the window.
         const eff = c !== null ? c : lastClock;
-        if (eff !== null && !inWindow(eff, lo, hi)) {
+        if (eff !== null && !inAny(eff)) {
           droppedByTime++;
           continue;
         }
@@ -803,6 +808,7 @@ function readRecords(files, forced = 'auto', opts = {}) {
     droppedByTime,
     note: notes.join('; '),
     timeWindow: timeOn ? { start: fmtClock(lo), end: fmtClock(hi), startMs: lo, endMs: hi } : null,
+    timeWindows: ranges.map(([a, b]) => ({ start: fmtClock(a), end: fmtClock(b), startMs: a, endMs: b })),
   };
 }
 
