@@ -246,7 +246,7 @@ class CopilotSlotTest(unittest.TestCase):
             def __init__(self, code):
                 self.returncode = code
 
-        def fake_execute(args, cwd, timeout, cancellable, slot="pipeline"):
+        def fake_execute(args, cwd, timeout, cancellable, slot="pipeline", on_line=None):
             calls.append((list(args), slot))
             if "--add-dir" in args:
                 return Done(1), b"", b"error: unknown option '--add-dir'", False

@@ -17,6 +17,7 @@
                                   time_start?, time_end?, ticket_utc_offset?}
   POST /api/runs/<id>/attachments -> download {names[], folder?} without running the pipeline
   GET  /api/runs/<id>/attachment-files -> inventory of downloaded and extracted files
+  GET  /api/runs/<id>/reasoning  -> recent public Copilot CLI reasoning/progress events
   POST /api/runs/<id>/extract     -> unpack an inventoried archive {path}
   POST /api/runs/<id>/delete      -> remove one history item, preserving active work and downloads
   GET  /api/runs/<id>/files/<name>  PUT same -> raw artifact / save edit
@@ -142,6 +143,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, {"catalogs": logsleuth.list_catalogs()})
             if p == "/api/assistant":
                 return self._send(200, assistant.state())
+            m = re.fullmatch(r"/api/runs/([^/]+)/reasoning", p)
+            if m:
+                run = pipeline.get(m.group(1))
+                return self._send(200, {"events": pipeline.reasoning_events(run["id"])}) if run else self._send(404, {"error": "run not found"})
             m = re.fullmatch(r"/api/runs/([^/]+)/attachment-files", p)
             if m:
                 run = pipeline.get(m.group(1))

@@ -4,6 +4,7 @@ import os
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -23,6 +24,76 @@ class FakeProcess:
 
 
 class CopilotCliTest(unittest.TestCase):
+    def test_public_reasoning_streams_before_the_final_answer_and_keeps_usage(self):
+        with tempfile.TemporaryDirectory() as cwd:
+            signal = Path(cwd) / "observed"
+            received, usage = [], []
+
+            def observe(event):
+                received.append(event)
+                if event["kind"] == "reasoning":
+                    signal.write_text("observed", encoding="utf-8")
+
+            script = """
+import json, sys, time
+from pathlib import Path
+def emit(kind, **data):
+    print(json.dumps({'type': kind, 'data': data}), flush=True)
+emit('assistant.reasoning_delta', reasoningId='r1', deltaContent='Checking ')
+deadline = time.monotonic() + 3
+while not Path('observed').exists() and time.monotonic() < deadline: time.sleep(.01)
+if not Path('observed').exists(): sys.exit(9)
+emit('assistant.reasoning_delta', reasoningId='r1', deltaContent='evidence.')
+emit('assistant.reasoning', reasoningId='r1', content='Checking evidence.')
+emit('tool.execution_start', toolCallId='t1', toolName='read_file', arguments={'secret': 'NEVER_CAPTURE'})
+emit('tool.execution_complete', toolCallId='t1', success=True, result={'content': 'NEVER_CAPTURE'})
+emit('assistant.message', messageId='m1', content='Final answer', reasoningText='Checking evidence.', reasoningOpaque='NEVER_CAPTURE')
+emit('assistant.usage', inputTokens=12, outputTokens=4, reasoningTokens=2)
+"""
+            with patch.object(copilot, "command", return_value=[sys.executable, "-u", "-c", script]):
+                with copilot.observe(observe):
+                    result = copilot.ask("prompt", cwd, on_usage=usage.append)
+            self.assertEqual(result, "Final answer")
+            self.assertTrue(signal.exists())
+            blocks = {e['id']: e for e in received if e['kind'] == 'reasoning'}
+            self.assertEqual(len(blocks), 1, 'final snapshot replaces streaming deltas')
+            self.assertEqual(next(iter(blocks.values()))['text'], 'Checking evidence.')
+            self.assertNotIn('NEVER_CAPTURE', json.dumps(received))
+            self.assertEqual(usage[0]['reasoning_tokens'], 2)
+            self.assertEqual(received[-1]['kind'], 'call.completed')
+
+    def test_streaming_timeout_retains_partial_trace_and_reaps_process(self):
+        script = "import time; print('{\"type\":\"assistant.intent\",\"data\":{\"intent\":\"Inspecting\"}}',flush=True); time.sleep(15)"
+        received = []
+        with tempfile.TemporaryDirectory() as cwd, patch.object(copilot, "command", return_value=[sys.executable, "-u", "-c", script]):
+            with self.assertRaisesRegex(copilot.CopilotError, 'timed out'):
+                copilot.ask('prompt', cwd, timeout=.5, on_event=received.append)
+        self.assertTrue(any(e['text'] == 'Inspecting' for e in received))
+        self.assertEqual(received[-1]['kind'], 'call.failed')
+        self.assertIsNone(copilot._slot('pipeline')['proc'])
+
+    def test_scoped_observer_does_not_leak_to_next_call(self):
+        received = []
+        with copilot.observe(received.append):
+            self.assertIsNotNone(copilot._observer.get())
+        self.assertIsNone(copilot._observer.get())
+
+    def test_legacy_cli_with_observer_uses_nonstreaming_text_fallback(self):
+        script = """
+import sys
+if '--output-format' in sys.argv:
+    print("error: unknown option '--output-format'", file=sys.stderr)
+    sys.exit(1)
+if sys.argv[sys.argv.index('--stream') + 1] != 'off' or '-s' not in sys.argv: sys.exit(9)
+print('legacy answer')
+"""
+        received = []
+        with tempfile.TemporaryDirectory() as cwd, patch.object(copilot, 'command', return_value=[sys.executable, '-u', '-c', script]):
+            answer = copilot.ask('prompt', cwd, on_event=received.append)
+        self.assertEqual(answer, 'legacy answer')
+        self.assertTrue(any(e['kind'] == 'unavailable' for e in received))
+        self.assertEqual(received[-1]['kind'], 'call.completed')
+
     def test_analysis_effort_and_context_are_passed_to_cli(self):
         proc = FakeProcess()
         with tempfile.TemporaryDirectory(prefix="ta-copilot-test-") as cwd, \

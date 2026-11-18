@@ -56,6 +56,9 @@ def main():
     pipeline._write(run, "02-understanding.md", "# Hiểu sơ bộ ticket\n\nKết nối bị ngắt sau khi ghép đôi. Chưa kiểm tra log.")
     analysis = pipeline._write(run, '05-analysis.md', 'Old analysis to be cleared by reset')
     pipeline._save(run)
+    trace = pipeline.reasoning_callback(run, 'understand')
+    trace({'id': 'fixture-reasoning', 'call_id': 'fixture-call', 'kind': 'reasoning', 'time': 1,
+           'text': 'Checking the ticket context <script>unsafe()</script>'})
     try:
         with mock.patch.object(server.doctor, "checks", return_value={"checks": []}), \
                 mock.patch.object(server.mcp, "status", return_value={}), \
@@ -66,6 +69,23 @@ def main():
             page.on("pageerror", lambda error: errors.append(str(error)))
             page.goto(base + "/?run=" + run["id"])
             expect(page.locator('#runList .run-item.active')).to_be_visible()
+            page.locator('#consoleReasoningTab').click()
+            expect(page.locator('#reasoningPanel')).to_be_visible()
+            expect(page.locator('#usagePanel')).to_be_hidden()
+            expect(page.locator('#reasoningPanel')).to_contain_text('Checking the ticket context')
+            expect(page.locator('#reasoningPanel script')).to_have_count(0)
+            trace({'id': 'fixture-reasoning', 'call_id': 'fixture-call', 'kind': 'reasoning', 'time': 2,
+                   'text': 'Checking the ticket context — updated live'})
+            expect(page.locator('#reasoningPanel .reasoning-event')).to_have_count(1)
+            expect(page.locator('#reasoningPanel')).to_contain_text('updated live')
+            page.reload()
+            page.locator('#consoleReasoningTab').click()
+            expect(page.locator('#reasoningPanel')).to_contain_text('updated live')
+            page.locator('#consoleReasoningTab').press('ArrowLeft')
+            expect(page.locator('#consoleUsageTab')).to_have_attribute('aria-selected', 'true')
+            expect(page.locator('#reasoningPanel')).to_be_hidden()
+            page.locator('#consoleReasoningTab').click()
+            page.screenshot(path=str(paths.DATA / 'cli-reasoning.png'))
             expect(page.locator('#m365HeadlessOption')).to_be_hidden()
             page.locator('.mode-btn[data-mode=m365]').click()
             expect(page.locator('#m365HeadlessOption')).to_be_visible()
@@ -87,6 +107,8 @@ def main():
             expect(page.locator('#m365Headless')).to_be_disabled()
             expect(page.locator('#resetWorkflow')).to_be_disabled()
             page.locator('#newRun').click()
+            expect(page.locator('#reasoningPanel .reasoning-event')).to_have_count(0)
+            expect(page.locator('#reasoningPanel')).to_contain_text('M365 web')
             expect(running).to_have_class('run-item  running')
             expect(running.locator('.history-running-tag')).to_be_visible()
             page.screenshot(path=str(paths.DATA / 'history-running.png'))
@@ -147,6 +169,8 @@ def main():
             assert run['usage_total']['total_tokens'] == 0
             assert all(state['elapsed_seconds'] == 0 for state in run['steps'].values())
             assert run['session_id'] != previous_session
+            expect(page.locator('#reasoningPanel .reasoning-event')).to_have_count(0)
+            assert pipeline.reasoning_events(run['id']) == []
             assert (paths.DATA / 'downloads' / 'UI-1' / 'logs.zip').exists()
             page.locator('#runList .run-item').hover()
             expect(page.locator('.history-delete')).to_have_css('opacity', '1')

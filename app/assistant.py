@@ -328,9 +328,10 @@ def _answer(message):
     try:
         run = pipeline.get(message["run_id"]) if message["run_id"] else None
         _prepare_work(run, cfg, message)
-        raw = copilot.ask(PROMPT.format(language=_language()), WORK, cfg.get("copilot_model") or "",
-                          timeout=TIMEOUT, extra_dirs=_readable_dirs(run), slot="assistant",
-                          on_usage=usage.update)
+        with copilot.observe(pipeline.reasoning_callback(run, step="assistant")):
+            raw = copilot.ask(PROMPT.format(language=_language()), WORK, cfg.get("copilot_model") or "",
+                              timeout=TIMEOUT, extra_dirs=_readable_dirs(run), slot="assistant",
+                              on_usage=usage.update)
         if _job["cancelled"]:
             raise copilot.CopilotError(t("asst.stopped"))
         text, proposed = parse_reply(raw)

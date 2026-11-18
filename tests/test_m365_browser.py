@@ -452,6 +452,27 @@ class GeneratedImageTest(unittest.TestCase):
                 self.worker.collect_images(self.page, [], folder, wait_s=1)
             self.assertEqual(list(Path(folder).iterdir()), [])
 
+    def test_truncated_image_header_is_not_saved_as_a_valid_image(self):
+        with tempfile.TemporaryDirectory() as folder, \
+                mock.patch.object(self.worker, 'image_srcs', return_value=['new-image']), \
+                mock.patch.object(self.worker, 'busy', return_value=False), \
+                mock.patch.object(self.worker, 'fetch_image', return_value=b'\x89PNG\r\n\x1a\n'), \
+                mock.patch.object(self.page, 'wait_for_timeout'):
+            with self.assertRaisesRegex(RuntimeError, 'Could not download'):
+                self.worker.collect_images(self.page, [], folder, wait_s=1)
+            self.assertEqual(list(Path(folder).iterdir()), [])
+
+    def test_request_fallback_rejects_http_errors_and_incomplete_downloads(self):
+        for status, length, expected in [(403, '4', 'HTTP 403'), (200, '100', 'incomplete')]:
+            with self.subTest(status=status), mock.patch.object(self.worker, 'roots', return_value=[]):
+                response = mock.Mock(ok=status == 200, status=status, headers={'content-length': length})
+                response.body.return_value = b'data'
+                self.worker.ctx = mock.Mock()
+                self.worker.ctx.request.get.return_value = response
+                with self.assertRaisesRegex(RuntimeError, expected):
+                    self.worker.fetch_image(self.page, 'https://example.test/image.png')
+                response.dispose.assert_called_once()
+
 
 @unittest.skipIf(browser is None, "playwright not installed")
 class CommonComposerTest(unittest.TestCase):

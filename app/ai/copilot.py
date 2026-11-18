@@ -10,6 +10,10 @@ import json
 import shutil
 import subprocess
 import threading
+import time
+import uuid
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 
 from ..mcp import child_env
@@ -20,6 +24,90 @@ PACKAGE = "@github/copilot"
 # side by side, and stopping one never kills the other.
 _slots_lock = threading.Lock()
 _slots = {}
+_observer = ContextVar("copilot_observer", default=None)
+
+
+@contextmanager
+def observe(callback):
+    """Attach run metadata at the caller without changing other providers or worker threads."""
+    token = _observer.set(callback)
+    try:
+        yield
+    finally:
+        _observer.reset(token)
+
+
+class _Progress:
+    """Allowlisted, public CLI events only; never persist opaque thinking or tool arguments/results.
+
+    Schema: https://docs.github.com/en/copilot/how-tos/copilot-sdk/features/streaming-events
+    Streaming snapshots replace the same block, so deltas and the final event are not duplicated.
+    """
+    def __init__(self, callback):
+        self.callback = callback
+        self.call = uuid.uuid4().hex
+        self.blocks, self.sent, self.tools = {}, {}, {}
+        self.seen = False
+
+    def emit(self, kind, text, key=None):
+        if not self.callback or not text:
+            return
+        try:
+            self.callback({"id": self.call + ":" + str(key or uuid.uuid4().hex), "call_id": self.call,
+                           "kind": kind, "text": str(text)[:16000], "time": time.time()})
+        except Exception:
+            pass  # Observability must not fail the model call.
+
+    def line(self, line):
+        try:
+            event = json.loads(line)
+        except (TypeError, ValueError):
+            return
+        if not isinstance(event, dict) or not isinstance(event.get("data"), dict):
+            return
+        kind, data = event.get("type"), event["data"]
+        text, key = "", event.get("id")
+        if kind in ("assistant.reasoning", "assistant.reasoning_delta"):
+            key = "reasoning:" + str(data.get("reasoningId") or "current")
+            content = data.get("deltaContent" if kind.endswith("_delta") else "content")
+            if not isinstance(content, str):
+                return
+            text = (self.blocks.get(key, "") + content) if kind.endswith("_delta") else content
+            self.blocks[key] = text[:16000]
+            self.seen = True
+            if kind.endswith("_delta") and time.monotonic() - self.sent.get(key, 0) < .25:
+                return
+            self.sent[key] = time.monotonic()
+            kind = "reasoning"
+        elif kind == "assistant.message":
+            if isinstance(data.get("reasoningText"), str) and data["reasoningText"][:16000] not in self.blocks.values():
+                self.emit("reasoning", data["reasoningText"], "message-reasoning:" + str(data.get("messageId") or key))
+                self.seen = True
+            if data.get("toolRequests") or data.get("tool_requests") or data.get("phase") == "thinking":
+                text, kind = data.get("content"), "progress"
+            # The final answer already has its artifact; do not duplicate it here.
+        elif kind == "assistant.intent":
+            text, kind = data.get("intent"), "progress"
+        elif kind == "tool.execution_start":
+            self.tools[data.get("toolCallId")] = str(data.get("toolName") or "tool")[:160]
+            text = self.tools[data.get("toolCallId")]
+        elif kind == "tool.execution_complete":
+            text = self.tools.get(data.get("toolCallId"), "tool") + (" ✓" if data.get("success") else " ✗")
+        elif kind == "tool.execution_progress":
+            text = data.get("progressMessage")
+        elif kind == "session.error":
+            text = data.get("message")
+        if isinstance(text, str) and text.strip():
+            self.seen = True
+            self.emit(kind, text, key)
+
+    def finish(self):
+        for key, text in self.blocks.items():
+            self.emit("reasoning", text, key)
+        if not self.seen:
+            self.emit("unavailable", "This CLI/model did not emit public reasoning or progress events.")
+
+
 _USAGE_FIELDS = {
     "input_tokens": "inputTokens",
     "output_tokens": "outputTokens",
@@ -86,7 +174,7 @@ def _slot(name):
         return _slots.setdefault(name, {"lock": threading.Lock(), "proc": None})
 
 
-def _execute(args, cwd, timeout, cancellable, slot="pipeline"):
+def _execute(args, cwd, timeout, cancellable, slot="pipeline", on_line=None):
     state = _slot(slot)
     with state["lock"]:
         if cancellable and stopflag.requested.is_set():
@@ -99,7 +187,35 @@ def _execute(args, cwd, timeout, cancellable, slot="pipeline"):
             cancel(slot)
         timed_out = False
         try:
-            out, err = proc.communicate(timeout=timeout)
+            if on_line is None:
+                out, err = proc.communicate(timeout=timeout)
+            else:
+                out_parts, err_parts = [], []
+
+                def drain_stdout():
+                    for line in iter(proc.stdout.readline, b""):
+                        out_parts.append(line)
+                        on_line(line.decode("utf-8", "replace"))
+
+                def drain_stderr():
+                    err_parts.append(proc.stderr.read())
+
+                readers = [threading.Thread(target=drain_stdout, daemon=True),
+                           threading.Thread(target=drain_stderr, daemon=True)]
+                for reader in readers:
+                    reader.start()
+                try:
+                    proc.wait(timeout=timeout)
+                except subprocess.TimeoutExpired:
+                    cancel(slot)
+                    proc.wait()
+                    timed_out = True
+                finally:
+                    for reader in readers:
+                        reader.join()
+                    proc.stdout.close()
+                    proc.stderr.close()
+                out, err = b"".join(out_parts), b"".join(err_parts)
         except subprocess.TimeoutExpired as exc:
             proc.kill()
             timed_out = True
@@ -181,15 +297,18 @@ def version():
 
 
 def ask(prompt, cwd, model="", timeout=900, cancellable=False, effort=None, context=None, on_usage=None,
-        extra_dirs=(), slot="pipeline"):
+        extra_dirs=(), slot="pipeline", on_event=None):
     """Run one read-only prompt. `extra_dirs` are readable besides `cwd` (`--add-dir`); `slot` names the
     process slot (see _slots) so independent callers do not queue behind each other."""
     cmd = command()
     if not cmd:
         raise CopilotError("Copilot CLI is not installed. Open Setup.")
-    args = [*cmd, "-p", prompt, "--output-format", "json", "-s", "--no-auto-update", "--stream", "off",
+    progress = _Progress(on_event or _observer.get())
+    args = [*cmd, "-p", prompt, "--output-format", "json", "--no-auto-update", "--stream", "on" if progress.callback else "off",
             "--allow-all-tools", "--deny-tool", "shell", "--deny-tool", "write",
             "--disable-builtin-mcps", "-C", str(cwd)]
+    if not progress.callback:
+        args.append("-s")
     for folder in dict.fromkeys(str(d) for d in extra_dirs or () if d):
         args += ["--add-dir", folder]
     if model:
@@ -198,8 +317,15 @@ def ask(prompt, cwd, model="", timeout=900, cancellable=False, effort=None, cont
         args += ["--context", context]
     if effort:
         args += ["--effort", effort]
+    progress.emit("call.started", model or "Copilot CLI")
     for _ in range(3):  # an older CLI may lack an optional flag: drop it and try again
-        proc, out, err, timed_out = _execute(args, cwd, timeout, cancellable, slot)
+        on_line = progress.line if progress.callback and "--output-format" in args else None
+        try:
+            proc, out, err, timed_out = _execute(args, cwd, timeout, cancellable, slot, on_line=on_line)
+        except Exception as exc:
+            progress.finish()
+            progress.emit("call.failed", str(exc)[:500])
+            raise
         raw = (out or b"").decode("utf-8", "replace")
         text, usage = _parse_output(raw)
         detail = err.decode("utf-8", "replace").strip() or text or raw.strip()
@@ -209,6 +335,12 @@ def ask(prompt, cwd, model="", timeout=900, cancellable=False, effort=None, cont
         if not option:
             break
         args = _without(args, option)
+        if option == "--output-format":
+            args[args.index("--stream") + 1] = "off"
+            args.append("-s")
+    progress.finish()
+    progress.emit("call.failed" if timed_out or proc.returncode or not text else "call.completed",
+                  "Timed out" if timed_out else "Empty response" if not text and not proc.returncode else "CLI exited with code " + str(proc.returncode))
     _notify_usage(on_usage, usage)
     if timed_out:
         raise CopilotError(f"Copilot CLI timed out after {timeout}s")

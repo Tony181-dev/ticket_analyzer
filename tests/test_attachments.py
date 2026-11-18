@@ -41,6 +41,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):
         HITS.append(self.path)
+        if self.path.startswith('/broken/'):
+            body = b'partial file'
+            self.send_response(206 if self.path.endswith('/partial') else 200)
+            if self.path.endswith('/truncated'):
+                self.send_header('Content-Length', str(len(body) + 100))
+            elif not self.path.endswith('/unknown-length'):
+                self.send_header('Content-Length', str(len(body)))
+            if self.path.endswith('/login'):
+                self.send_header('Content-Type', 'text/html; charset=utf-8')
+            self.end_headers()
+            self.wfile.write(body)
+            self.close_connection = True
+            return
         if self.path.startswith("/redirect/"):  # relative Location, like a Jira behind a proxy (axel 2.4 cannot)
             self.send_response(302)
             self.send_header("Location", "/secure/" + self.path[len("/redirect/"):])
@@ -494,6 +507,40 @@ class AttachmentTest(unittest.TestCase):
             got = attachments.download("CAP-2", items, folder, log=lambda _: None, max_bytes=8)
             self.assertEqual(len(got), 2)
             self.assertEqual(sum(p.stat().st_size for p in Path(folder).iterdir()), 8)
+
+    def test_broken_downloads_never_replace_an_existing_file_or_leave_parts(self):
+        base = f'http://127.0.0.1:{self.httpd.server_port}'
+        for endpoint, error in [('truncated', 'incomplete'), ('partial', 'HTTP 200'), ('login', 'HTML')]:
+            with self.subTest(endpoint=endpoint), tempfile.TemporaryDirectory() as folder:
+                original = Path(folder) / 'logs.zip'
+                original.write_bytes(b'old complete file')
+                item = {'id': 'broken', 'filename': 'logs.zip', 'size': 999, 'url': base + '/broken/' + endpoint}
+                progress = []
+                with self.assertRaisesRegex(RuntimeError, error):
+                    attachments.download('BROKEN-1', [item], folder, log=lambda _: None,
+                                         progress=lambda *event: progress.append(event))
+                self.assertEqual(original.read_bytes(), b'old complete file')
+                self.assertFalse(original.with_suffix('.zip.part').exists())
+                self.assertFalse(any(event[0] == 'downloaded' for event in progress))
+
+    def test_unknown_length_download_is_complete_and_budget_is_still_enforced(self):
+        url = f'http://127.0.0.1:{self.httpd.server_port}/broken/unknown-length'
+        item = {'id': 'unknown', 'filename': 'logs.zip', 'size': 0, 'url': url}
+        with tempfile.TemporaryDirectory() as folder:
+            got = attachments.download('UNKNOWN-1', [item], folder, log=lambda _: None)
+            self.assertEqual(got['logs.zip'].read_bytes(), b'partial file')
+        with tempfile.TemporaryDirectory() as folder:
+            with self.assertRaisesRegex(RuntimeError, 'budget'):
+                attachments.download('UNKNOWN-1', [item], folder, log=lambda _: None, max_bytes=3)
+            self.assertEqual(list(Path(folder).iterdir()), [])
+
+    def test_cached_download_cannot_exceed_the_remaining_total_budget(self):
+        with tempfile.TemporaryDirectory() as folder:
+            (Path(folder) / 'cached.log').write_bytes(b'12345')
+            item = {'id': 'cache', 'filename': 'cached.log', 'size': 5, 'url': 'unused'}
+            with self.assertRaisesRegex(RuntimeError, 'budget'):
+                attachments.download('CACHE-1', [item], folder, log=lambda _: None, max_bytes=4)
+            self.assertEqual((Path(folder) / 'cached.log').read_bytes(), b'12345')
 
     def test_numbered_zip_parts_extract_to_real_logs(self):
         import multivolumefile

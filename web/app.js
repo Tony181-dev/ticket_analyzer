@@ -18,6 +18,8 @@ const S = {
   editing: false,
   doctor: null,
   consoleTab: 'log',
+  reasoning: [],
+  reasoningRun: null,
   preview: null,          // local-only workflow simulation
 };
 
@@ -79,6 +81,12 @@ function connect() {
       scheduleHistory();
     } else if (m.type === 'log') {
       if (S.run && m.run_id === S.run.id) pushLog(m.line);
+    } else if (m.type === 'ai_reasoning') {
+      if (S.run?.id === m.run_id) {
+        if (S.reasoningRun !== m.run_id) { S.reasoning = []; S.reasoningRun = m.run_id; }
+        mergeReasoning([m.event]);
+        if (S.consoleTab === 'reasoning') renderReasoningPanel();
+      }
     } else if (m.type === 'busy') {
       if (m.busy && S.preview) stopPreview();
       S.state.busy = m.busy; S.state.busy_run = m.busy ? m.run_id : null; renderInputs(); renderButtons(); renderFlow();
@@ -111,7 +119,7 @@ function connect() {
     }
   };
   es.onerror = () => { $('#setupText').textContent = t('setup.offline'); $('#setupPill').className = 'pill bad'; };
-  es.onopen = () => refreshDoctor();
+  es.onopen = () => { refreshDoctor(); loadReasoning(); };
 }
 
 // Coming back from a login window / terminal: re-check right away.
@@ -297,6 +305,8 @@ $('#confirmDeleteRun').onclick = guard(async () => {
 
 async function openRun(id) {
   try { S.run = await api(`/api/runs/${encodeURIComponent(id)}`); } catch (e) { return toast(e.message, true); }
+  S.reasoning = []; S.reasoningRun = id;
+  loadReasoning();
   closeModals();
   $('#console').textContent = '';
   $('#consoleCount').textContent = '';
@@ -720,6 +730,8 @@ function clearWorkflowView() {
   $('#console').textContent = '';
   $('#consoleCount').textContent = '';
   S.gatePrompted = null;
+  S.reasoning = []; S.reasoningRun = S.run?.id || null;
+  S.reasoningVersion = (S.reasoningVersion || 0) + 1;
   closeDrawer();
   renderAll();
 }
@@ -751,6 +763,7 @@ function renderAll() {
   renderFlow();
   renderButtons();
   renderUsagePanel();
+  renderReasoningPanel();
   maybePromptGate();
   renderAttProgress();
   if (window.Assistant) Assistant.sync();
@@ -837,12 +850,12 @@ function pushLog(line) {
 function selectConsoleTab(tab) {
   S.consoleTab = tab;
   const showLog = tab === 'log';
-  $('#consoleLogTab').classList.toggle('active', showLog);
-  $('#consoleLogTab').setAttribute('aria-selected', String(showLog));
-  $('#consoleUsageTab').classList.toggle('active', !showLog);
-  $('#consoleUsageTab').setAttribute('aria-selected', String(!showLog));
-  $('#consoleLogPanel').hidden = !showLog;
-  $('#usagePanel').hidden = showLog;
+  for (const [name, button, panel] of [['log', '#consoleLogTab', '#consoleLogPanel'],
+    ['usage', '#consoleUsageTab', '#usagePanel'], ['reasoning', '#consoleReasoningTab', '#reasoningPanel']]) {
+    $(button).classList.toggle('active', tab === name);
+    $(button).setAttribute('aria-selected', String(tab === name));
+    $(panel).hidden = tab !== name;
+  }
   $('#clearConsole').hidden = !showLog;
   $('#consoleCount').hidden = !showLog;
   const card = $('.console-card');
@@ -850,10 +863,62 @@ function selectConsoleTab(tab) {
     card.classList.remove('collapsed');
     $('#consoleToggle').setAttribute('aria-expanded', 'true');
   }
-  if (!showLog) renderUsagePanel();
+  if (tab === 'usage') renderUsagePanel();
+  if (tab === 'reasoning') { renderReasoningPanel(); loadReasoning(); }
 }
 $('#consoleLogTab').onclick = () => selectConsoleTab('log');
 $('#consoleUsageTab').onclick = () => selectConsoleTab('usage');
+$('#consoleReasoningTab').onclick = () => selectConsoleTab('reasoning');
+// Keyboard navigation follows the visible tab order.
+$('.console-tabs').addEventListener('keydown', (event) => {
+  const tabs = ['log', 'usage', 'reasoning'];
+  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+  event.preventDefault();
+  const current = tabs.indexOf(S.consoleTab);
+  const next = event.key === 'Home' ? 0 : event.key === 'End' ? 2 : (current + (event.key === 'ArrowRight' ? 1 : 2)) % 3;
+  selectConsoleTab(tabs[next]);
+  $(`#console${['Log', 'Usage', 'Reasoning'][next]}Tab`).focus();
+});
+
+function mergeReasoning(entries) {
+  const byId = new Map(S.reasoning.map((entry) => [entry.id, entry]));
+  for (const entry of entries) {
+    if (!byId.has(entry.id) || Number(entry.time) >= Number(byId.get(entry.id).time)) byId.set(entry.id, entry);
+  }
+  S.reasoning = [...byId.values()].slice(-600);
+}
+
+async function loadReasoning() {
+  const id = S.run?.id, version = S.reasoningVersion || 0;
+  if (!id) return;
+  try {
+    const result = await api(`/api/runs/${encodeURIComponent(id)}/reasoning`);
+    if (S.run?.id !== id || version !== (S.reasoningVersion || 0)) return;
+    if (S.reasoningRun !== id) { S.reasoning = []; S.reasoningRun = id; }
+    mergeReasoning(result.events || []);
+    renderReasoningPanel();
+  } catch { /* SSE remains available; an offline reconnect retries the journal. */ }
+}
+
+function renderReasoningPanel() {
+  const panel = $('#reasoningPanel');
+  if (!panel) return;
+  const records = S.run && S.reasoningRun === S.run.id ? S.reasoning : [];
+  const nearBottom = panel.scrollHeight - panel.scrollTop - panel.clientHeight < 60;
+  panel.innerHTML = `<p class="usage-note">${esc(t('reasoning.help'))}</p>` + (!records.length
+    ? `<p class="usage-empty">${esc(t(S.state?.settings.ai_mode === 'm365' ? 'reasoning.emptyM365' : 'reasoning.empty'))}</p>`
+    : records.map((entry) => {
+      const label = entry.step === 'assistant' ? t('reasoning.assistant') :
+        (['jira', 'understand', 'log', 'graph', 'analyze', 'format', 'infographic', 'collab'].includes(entry.step) ? t('step.' + entry.step) : entry.step);
+      const kind = ['reasoning', 'progress', 'unavailable', 'call.started', 'call.completed', 'call.failed',
+        'tool.execution_start', 'tool.execution_complete', 'tool.execution_progress', 'session.error'].includes(entry.kind) ? entry.kind : 'progress';
+      return `<article class="reasoning-event"><div class="reasoning-meta"><strong>${esc(label || 'CLI')}</strong>
+        <span>${esc(t('reasoning.pass', { n: entry.pass || 0 }))} · ${esc(t('reasoning.' + kind))}</span>
+        <time>${esc(new Date(entry.time * 1000).toLocaleTimeString(I18N.locale))}</time></div>
+        <pre>${esc(entry.kind === 'unavailable' ? t('reasoning.unavailable') : entry.text)}</pre></article>`;
+    }).join(''));
+  if (nearBottom && !panel.hidden) panel.scrollTop = panel.scrollHeight;
+}
 $('#clearConsole').onclick = () => {
   $('#console').textContent = '';
   $('#consoleCount').textContent = '';

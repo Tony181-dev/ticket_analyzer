@@ -347,7 +347,7 @@ body.preview-active .layout .node { cursor: wait; }
 /* console ----------------------------------------------------------------- */
 .console-card { overflow: hidden; }
 .console-head { display: flex; align-items: center; gap: 8px; padding: 0 10px 0 0; border-bottom: 1px solid var(--line); background: var(--surface); }
-.console-tabs { display: flex; align-items: center; gap: 2px; min-width: 0; margin-right: auto; }
+.console-tabs { display: flex; align-items: center; gap: 2px; min-width: 0; margin-right: auto; overflow-x: auto; }
 .console-tab { padding: 11px 14px 9px; border: 0; border-bottom: 2px solid transparent; background: none; color: var(--ink-2); font-weight: 600; cursor: pointer; white-space: nowrap; }
 .console-tab:hover { color: var(--accent); }
 .console-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
@@ -360,6 +360,13 @@ body.preview-active .layout .node { cursor: wait; }
 .console-card.collapsed .console-panels { display: none; }
 .console .l-ok { color: var(--ok); } .console .l-err { color: var(--err); } .console .l-run { color: var(--accent); }
 .usage-panel { padding: 16px; background: var(--surface-2); }
+.reasoning-panel { padding: 12px 16px; max-height: 440px; overflow: auto; background: var(--surface-2); }
+.reasoning-panel > .usage-note { margin: 0 0 12px; }
+.reasoning-event { padding: 10px 12px; margin-top: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+.reasoning-meta { display: flex; flex-wrap: wrap; gap: 6px 12px; font-size: 12px; color: var(--ink-3); }
+.reasoning-meta strong { color: var(--ink); }
+.reasoning-meta time { margin-left: auto; font-variant-numeric: tabular-nums; }
+.reasoning-event pre { margin: 8px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.6 var(--mono); }
 .usage-content { display: grid; gap: 18px; }
 .usage-summary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .usage-stat { min-width: 0; padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }

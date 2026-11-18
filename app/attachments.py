@@ -357,6 +357,10 @@ def _fetch_http(url, headers, target, cancel, report, max_bytes=None):
     part = target.with_name(target.name + ".part")
     try:
         with _open(url, headers, timeout=120) as r, open(part, "wb") as f:
+            if r.status != 200:
+                raise RuntimeError(f"attachment download requires HTTP 200, received {r.status}")
+            if "text/html" in r.headers.get("Content-Type", "").lower() and target.suffix.lower() not in (".html", ".htm", ".xhtml"):
+                raise RuntimeError("attachment URL returned an HTML page instead of the file; check Jira sign-in/access")
             total, got = int(r.headers.get("Content-Length") or 0), 0
             if max_bytes is not None and total > max_bytes:
                 raise RuntimeError("attachment exceeds remaining download budget")
@@ -367,7 +371,10 @@ def _fetch_http(url, headers, target, cancel, report, max_bytes=None):
                 f.write(chunk)
                 got += len(chunk)
                 if total:
-                    report(got * 100 // total)
+                    report(min(99, got * 100 // total))
+            cancel()
+            if r.headers.get("Content-Length") is not None and got != total:
+                raise RuntimeError(f"incomplete attachment download: received {got:,} B, expected {total:,} B")
         part.replace(target)
     except BaseException:
         _discard(part)
@@ -448,6 +455,11 @@ def download(issue, items, folder, log=print, cancel=lambda: None, progress=lamb
         progress("download", n, len(items), name)
         target = folder / _safe_name(name)
         if target.exists() and a["size"] and target.stat().st_size == a["size"]:
+            if left is not None and target.stat().st_size > left:
+                errors.append(f"{name}: attachment exceeds remaining download budget")
+                log(f"✗ {errors[-1]}")
+                progress("failed", n, len(items), name)
+                continue
             if left is not None:
                 left = max(0, left - target.stat().st_size)
             log(f"= {name} (đã có / already present)")

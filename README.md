@@ -106,6 +106,9 @@ Máy người nhận vẫn cần Node.js (cho LogSleuth / Copilot CLI); Setup t�
 
 ## Cấu hình & dữ liệu
 
+- **Reasoning:** tab bên cạnh **Token & thời gian** hiển thị reasoning/tiến trình công khai mà Copilot CLI phát ra trực tiếp, kèm bước và lượt chạy; lưu tối đa 600 sự kiện gần nhất trong journal giới hạn 4 MiB. Delta được cập nhật vào cùng một khối, không lặp lại bản hoàn chỉnh. Model/CLI không phát trace sẽ có thông báo rõ ràng. M365 chỉ ghi lời gọi AI local (như trợ lý CLI), không truy vết reasoning của chat web. **Reset workflow** xóa journal này cùng token/thời gian.
+  Bộ đọc dùng [schema sự kiện công khai của GitHub](https://docs.github.com/en/copilot/how-tos/copilot-sdk/features/streaming-events); không lưu trường reasoning mã hóa, đối số hay kết quả thô của tool.
+- **Kiểm tra tải file:** HTTP chỉ công nhận tải xong sau khi đối chiếu số byte với `Content-Length` (nếu có), từ chối phản hồi một phần và trang HTML đăng nhập thay cho file. File lỗi `.part` bị xóa, bản file cũ được giữ; ngân sách tổng áp dụng cả file đã tải sẵn. Ảnh M365 được kiểm tra HTTP/độ dài ở nhánh tải dự phòng và giải mã ảnh trước khi lưu, tránh ảnh tải thiếu chỉ có magic header.
 - **Lịch sử:** rê chuột hoặc dùng phím Tab vào từng ticket để hiện nút thùng rác. Xác nhận **Yes / Cancel** chỉ xóa mục đã chọn; tác vụ đang chạy, thư mục dữ liệu riêng và file tải về Downloads được giữ lại.
   Phiên đang chạy có bánh răng quay, nhãn **Đang chạy** và viền vàng, kể cả khi đang xem ticket khác; hoàn tất/dừng thì tự bỏ dấu hiệu này.
 - `data/config/settings.json`: ngôn ngữ, model, space key, parent page, thư mục tải… (sửa qua ⚙ trong app).

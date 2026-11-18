@@ -1016,9 +1016,16 @@ class Browser:
             except Exception:
                 continue
         response = self.ctx.request.get(src)
-        if not response.ok:
-            raise RuntimeError(f"Generated image download failed: HTTP {response.status}")
-        return response.body()
+        try:
+            if not response.ok:
+                raise RuntimeError(f"Generated image download failed: HTTP {response.status}")
+            data = response.body()
+            length = response.headers.get("content-length")
+            if length is not None and not response.headers.get("content-encoding") and len(data) != int(length):
+                raise RuntimeError("Generated image download is incomplete")
+            return data
+        finally:
+            response.dispose()
     def collect_images(self, page, before, image_dir, wait_s=180):
         # Image generation lags behind the text answer, so keep polling until a new large image shows up.
         known = set(before)
@@ -1040,6 +1047,13 @@ class Browser:
                 ext = ".png" if data.startswith(b"\x89PNG\r\n\x1a\n") else ".jpg" if data.startswith(b"\xff\xd8") else ".webp" if data[:4] == b"RIFF" and data[8:12] == b"WEBP" else None
                 if ext is None:
                     raise RuntimeError("Generated image download is not PNG, JPEG or WebP")
+                # A valid magic header alone does not prove the download is a usable image.
+                page.evaluate("""async (encoded) => {
+                  const bytes = Uint8Array.from(atob(encoded), c => c.charCodeAt(0));
+                  const image = await createImageBitmap(new Blob([bytes]));
+                  if (!image.width || !image.height) throw new Error('Generated image has no pixels');
+                  image.close();
+                }""", base64.b64encode(data).decode("ascii"))
                 target = Path(image_dir) / ("infographic-1" + ext)
                 target.write_bytes(data)
                 return [str(target)]

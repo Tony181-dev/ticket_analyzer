@@ -16,7 +16,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from . import ai, attachments, events, logprep, mcp, paths, settings
+from . import ai, attachments, events, logprep, mcp, paths, reasoning, settings
 from .evidence import graph as codegraph
 from .i18n import language_name, relocalize, t
 from .evidence import logsleuth, timealign
@@ -206,7 +206,8 @@ def _ask_ai(run, cfg, prompt, files, work_dir, retries=None, **kwargs):
             retries = 1
     for attempt in range(retries + 1):
         try:
-            answer = ai.ask(cfg, prompt, files, work_dir, **kwargs)
+            with ai.copilot.observe(reasoning_callback(run)):
+                answer = ai.ask(cfg, prompt, files, work_dir, **kwargs)
             if not measured:  # M365 (and a Copilot CLI without usage events) reports nothing: estimate
                 _record_usage(run, _estimate_tokens(prompt, files, answer), estimated=True)
             return answer
@@ -216,6 +217,33 @@ def _ask_ai(run, cfg, prompt, files, work_dir, retries=None, **kwargs):
             _log(run, t("log.ai_retry", n=attempt + 1, total=retries, error=str(exc)[:300]))
             if executor.cancel.wait(3):
                 raise
+
+
+def reasoning_callback(run, step=None):
+    """Capture the call's run/step/pass now, including independent local assistant calls in M365 mode."""
+    if not run:
+        return None
+    session = run.get("session_id")
+    metadata = {"run_id": run["id"], "step": step or run.get("current_step") or "local",
+                "pass": (run.get("usage_passes") or [{}])[-1].get("n", 0), "provider": "copilot"}
+
+    def record(event):
+        with _lock:
+            # A reset/deletion during a local assistant request must not resurrect the old trace.
+            current = get(run["id"])
+            if not current or current.get("session_id") != session:
+                return
+            entry = {**event, **metadata}
+            reasoning.append(run_dir(run["id"]), entry)
+            events.publish("ai_reasoning", run_id=run["id"], event=entry)
+    return record
+
+
+def reasoning_events(run_id):
+    with _lock:
+        if not get(run_id):
+            raise ValueError("Run not found")
+        return reasoning.read(run_dir(run_id))
 
 
 def _finish_step(state, status, **changes):
@@ -512,7 +540,7 @@ def reset_workflow(run_id):
         preserved += [Path(file).resolve() for file in run["inputs"].get("log_files", [])]
         names = {name for artifacts in ARTIFACTS.values() for name, *_ in artifacts}
         names -= {"01-attachments.md"}
-        names.update({"02-focus.json", "03-catalog.json", "run.log", "logs-prepared", "m365-attachments", "ctx", "06-infographic", "06-refine"})
+        names.update({"02-focus.json", "03-catalog.json", "run.log", reasoning.NAME, "logs-prepared", "m365-attachments", "ctx", "06-infographic", "06-refine"})
         for name in sorted(names):
             target = root / name
             resolved = target.resolve()
