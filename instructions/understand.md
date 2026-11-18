@@ -79,8 +79,22 @@ itself names. Do not add names from outside the ticket.
 
 ## Output
 
-Write a few lines explaining what you found (time, zone, chosen files). Then end your answer with
-exactly one fenced JSON block:
+Start with a useful preliminary Markdown analysis for the person waiting for the report. Write in
+the requested UI language, using short paragraphs and bullets under these headings:
+
+- **Ticket context**: what the user is trying to do, the affected feature/environment/version,
+  and the sequence of events or reproduction steps actually described.
+- **Reported problem**: expected versus observed behavior, impact, and relevant comments or updates.
+- **Initial understanding**: what the ticket supports so far, possible investigation directions
+  explicitly labelled as hypotheses, and missing information or contradictions to verify.
+- **Incident time and evidence plan**: the stated time/date/zone (or unknown), which attachments
+  look useful and why, and what to check after downloading/extracting them.
+
+Be specific to this ticket; omit unknown details instead of inventing them. This is a preliminary
+reading of the ticket, not a root cause report. Clearly state that logs, images and source have
+not yet been inspected. Do not claim an attachment contains a particular file until verified.
+Do not output the ticket's raw JSON in the narrative. Then end with exactly one fenced JSON
+block for the application's internal time/evidence selection:
 
 ```json
 {

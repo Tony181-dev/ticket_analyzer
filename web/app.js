@@ -82,6 +82,7 @@ function connect() {
     } else if (m.type === 'busy') {
       if (m.busy && S.preview) stopPreview();
       S.state.busy = m.busy; S.state.busy_run = m.busy ? m.run_id : null; renderInputs(); renderButtons(); renderFlow();
+      renderAttProgress();
       if (!m.busy) { maybePromptGate(); refreshDoctor(); }
       if (S.selected === 'log') refreshDrawer();
     } else if (m.type === 'doctor_log') {
@@ -90,6 +91,9 @@ function connect() {
       refreshDoctor();
     } else if (m.type === 'runs_cleared') {
       if (S.run && S.run.id !== m.keep) $('#newRun').click();
+      scheduleHistory();
+    } else if (m.type === 'run_deleted') {
+      if (S.run && S.run.id === m.run_id) $('#newRun').click();
       scheduleHistory();
     } else if (m.type.startsWith('assistant')) {
       if (window.Assistant) Assistant.onEvent(m);
@@ -245,13 +249,36 @@ function renderHistory() {
     const tag = r.collab && r.collab.page_id ? '<span class="tag ok">Collab</span>'
       : r.failed ? `<span class="tag err">${esc(t('history.failed'))}</span>` : `<span class="tag">${r.done}/8</span>`;
     return `<li class="run-item ${S.run && S.run.id === r.id ? 'active' : ''}" data-id="${esc(r.id)}">
-      <div class="k">${esc(r.issue)} ${tag}</div><div class="s">${esc(r.summary || '—')}</div><div class="t">${when}</div></li>`;
+      <button type="button" class="history-open" data-open-run="${esc(r.id)}"><span class="k">${esc(r.issue)} ${tag}</span><span class="s">${esc(r.summary || '—')}</span><span class="t">${when}</span></button>
+      <button type="button" class="icon-btn history-delete" data-delete-run="${esc(r.id)}" title="${esc(t('history.delete'))}" aria-label="${esc(t('history.delete'))} ${esc(r.issue)}"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"/></svg></button></li>`;
   }).join('');
-  for (const li of ul.querySelectorAll('.run-item')) li.onclick = () => openRun(li.dataset.id);
+  for (const button of ul.querySelectorAll('[data-open-run]')) button.onclick = () => openRun(button.dataset.openRun);
+  for (const button of ul.querySelectorAll('[data-delete-run]')) button.onclick = () => {
+    S.deleteRunId = button.dataset.deleteRun;
+    $('#deleteRunIssue').textContent = runs.find((r) => r.id === S.deleteRunId).issue;
+    openModal('#deleteRunModal');
+    $('#deleteRunModal [data-close]').focus();
+  };
 }
+
+$('#confirmDeleteRun').onclick = guard(async () => {
+  const id = S.deleteRunId;
+  if (!id) return;
+  const button = $('#confirmDeleteRun');
+  button.disabled = true;
+  try {
+    const result = await api(`/api/runs/${encodeURIComponent(id)}/delete`, { body: {} });
+    $('#deleteRunModal').hidden = true;
+    if (result.removed && S.run && S.run.id === id) $('#newRun').click();
+    S.state = await api('/api/state');
+    renderHistory();
+    toast(t(result.removed ? 'history.deleted' : 'history.keptRunning'));
+  } finally { button.disabled = false; }
+});
 
 async function openRun(id) {
   try { S.run = await api(`/api/runs/${encodeURIComponent(id)}`); } catch (e) { return toast(e.message, true); }
+  closeModals();
   $('#console').textContent = '';
   $('#consoleCount').textContent = '';
   try {
@@ -266,6 +293,7 @@ async function openRun(id) {
 }
 
 $('#newRun').onclick = () => {
+  closeModals();
   S.run = null;
   S.draft = freshDraft();
   $('#issue').value = '';
@@ -553,7 +581,7 @@ function mayHaveLogs() {
 function hasInputs(id) {
   const inp = inputs();
   if (id === 'jira') return !!S.run || !!$('#issue').value.trim();
-  if (id === 'understand') return mayHaveLogs() && inp.gate !== 'manual';
+  if (id === 'understand') return inp.gate !== 'manual';
   if (id === 'log') return mayHaveLogs() && !(S.run && (S.run.gate_state || {}).skip_logs);
   if (id === 'graph') return !!inp.source_dir && inp.use_codegraph !== false;
   if (id === 'infographic') return inp.use_infographic !== false;
@@ -563,8 +591,7 @@ function hasInputs(id) {
 function optionalReason(id) {
   const inp = inputs();
   if (id === 'understand') {
-    if (inp.gate === 'manual' && mayHaveLogs()) return 'opt.manualGate';
-    return mayHaveLogs() ? null : 'opt.needLogs';
+    return inp.gate === 'manual' ? 'opt.manualGate' : null;
   }
   if (id === 'log') {
     if (S.run && (S.run.gate_state || {}).skip_logs) return 'opt.logsSkipped';
@@ -815,7 +842,13 @@ function closeDrawer() {
 }
 $('#drawerClose').onclick = closeDrawer;
 $('#scrim').onclick = closeDrawer;
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { closeDrawer(); closeModals(); } });
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape' || e.defaultPrevented) return;
+  if (!$('#helpModal').hidden) { $('#helpModal').hidden = true; return; }
+  const modal = [...document.querySelectorAll('.modal')].reverse().find((m) => !m.hidden);
+  if (modal) { modal.hidden = true; return; }
+  closeDrawer();
+});
 
 function refreshDrawer() {
   if (!S.selected || S.editing) return;
@@ -1286,26 +1319,40 @@ function bindAttachments() {
 }
 
 function openAttachments() {
+  if (!S.run) return toast(t('att.needTicket'));
+  renderAttachmentChoices(true);
+  selectAttachmentTab('ticket');
+  renderAttProgress();
+  openModal('#attProgModal');
+  refreshAttachmentFiles();
+}
+
+function renderAttachmentChoices(reset = false) {
   const run = S.run;
   if (!run) return;
   const list = run.attachments || [];
+  const key = JSON.stringify([run.id, list, S.state.busy]);
+  if (!reset && key === S.attChoicesKey) return;
+  const selected = !reset && S.attChoicesRun === run.id ? new Set(attBoxes().filter((b) => b.checked).map((b) => b.dataset.name)) : null;
+  S.attChoicesKey = key;
+  S.attChoicesRun = run.id;
   $('#attSub').textContent = `${run.issue}${run.summary ? ' - ' + run.summary : ''}`;
   // A ticket data folder fixes where attachments go: <data folder>/attachments.
   const fixed = !!(run.inputs.data_dir || '').trim();
-  $('#attFolder').value = fixed ? run.attachment_dir || '' : run.inputs.download_dir || S.state.settings.download_dir || '';
+  if (reset || fixed) $('#attFolder').value = fixed ? run.attachment_dir || '' : run.inputs.download_dir || S.state.settings.download_dir || '';
   $('#attFolder').placeholder = (S.state.default_download_dir || '').replace('<ISSUE>', run.issue);
-  $('#attFolder').disabled = $('#attPick').disabled = fixed;
+  $('#attFolder').disabled = $('#attPick').disabled = fixed || S.state.busy;
   $('#attFolder').title = fixed ? t('att.folderFromDataDir') : '';
   $('#attList').innerHTML = list.length ? list.map((a, i) => {
     const badges = [a.path ? t('att.have') : '', a.analyzed ? t('att.analyzed') : ''].filter(Boolean)
       .map((b) => ` <span class="tag ok">${esc(b)}</span>`).join('');
-    return `<label class="att-row"><input type="checkbox" data-i="${i}" ${a.kind !== 'other' ? 'checked' : ''}>
-      <span class="att-name">${esc(a.filename)}${badges}</span>
+    const reason = ((run.focus || {}).attachments || []).find((pick) => pick.filename === a.filename)?.reason;
+    return `<label class="att-row"><input type="checkbox" data-i="${i}" data-name="${esc(a.filename)}" ${(selected ? selected.has(a.filename) : a.kind !== 'other') ? 'checked' : ''} ${S.state.busy ? 'disabled' : ''}>
+      <span class="att-name">${esc(a.filename)}${badges}${reason ? `<span class="att-reason muted small">${esc(reason)}</span>` : ''}</span>
       <span class="tag">${esc(t('att.kind.' + a.kind))}</span><span class="muted small att-size">${fmtSize(a.size || 0)}</span></label>`;
   }).join('') : `<div class="muted small">${esc(t('att.none'))}</div>`;
   $('#attSkip').textContent = t('att.close');
   updateAttSelection();
-  openModal('#attModal');
 }
 
 const attBoxes = () => [...document.querySelectorAll('#attList [data-i]')];
@@ -1316,9 +1363,70 @@ function updateAttSelection() {
   $('#attCount').textContent = t('att.selected', { n, total: boxes.length });
   $('#attAll').checked = boxes.length > 0 && n === boxes.length;
   $('#attAll').indeterminate = n > 0 && n < boxes.length;
-  $('#attAll').disabled = !boxes.length;
-  $('#attRun').disabled = n === 0;
+  $('#attAll').disabled = !boxes.length || S.state.busy;
+  $('#attRun').disabled = n === 0 || S.state.busy;
 }
+
+function selectAttachmentTab(tab) {
+  const ticket = tab === 'ticket';
+  for (const [id, active] of [['ticketAttachmentsTab', ticket], ['extractedFilesTab', !ticket]]) {
+    $('#' + id).setAttribute('aria-selected', String(active));
+    $('#' + id).classList.toggle('active', active);
+    $('#' + id).tabIndex = active ? 0 : -1;
+  }
+  $('#ticketAttachmentsPanel').hidden = !ticket;
+  $('#extractedFilesPanel').hidden = ticket;
+}
+$('#ticketAttachmentsTab').onclick = () => selectAttachmentTab('ticket');
+$('#extractedFilesTab').onclick = () => { selectAttachmentTab('files'); refreshAttachmentFiles(); };
+$('#attachmentTabs').onkeydown = (event) => {
+  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+  event.preventDefault();
+  const ticket = event.key === 'Home' || (event.key !== 'End' && $('#ticketAttachmentsTab').getAttribute('aria-selected') !== 'true');
+  selectAttachmentTab(ticket ? 'ticket' : 'files');
+  $(ticket ? '#ticketAttachmentsTab' : '#extractedFilesTab').focus();
+  if (!ticket) refreshAttachmentFiles();
+};
+
+async function refreshAttachmentFiles() {
+  if (!S.run) { $('#extractedFiles').textContent = t('att.filesEmpty'); return; }
+  const id = S.run.id;
+  const request = S.attScanRequest = (S.attScanRequest || 0) + 1;
+  $('#attRescan').disabled = true;
+  try {
+    const result = await api(`/api/runs/${encodeURIComponent(id)}/attachment-files`);
+    if (!S.run || S.run.id !== id || request !== S.attScanRequest) return;
+    $('#extractedFiles').innerHTML = result.files.map((file) => `<div class="att-row scanned-file">
+      <span class="att-name">${esc(file.relative_path)}<span class="att-reason muted small">${esc(file.origin)} · ${esc(t('att.kind.' + file.kind))}</span></span>
+      <span class="muted small">${fmtSize(file.size)}</span>
+      ${file.extracted ? `<span class="tag ok">${esc(t('att.extractAgain'))}</span>` : file.extractable ? `<button type="button" class="btn btn-sm" data-extract-path="${esc(file.path)}" ${S.state.busy ? 'disabled' : ''}>${esc(t('att.extractMore'))}</button>` : ''}
+      </div>`).join('') || `<p class="muted small">${esc(t('att.filesEmpty'))}</p>`;
+  } catch (error) {
+    if (S.run?.id === id && request === S.attScanRequest) $('#extractedFiles').textContent = error.message;
+  } finally { if (request === S.attScanRequest) $('#attRescan').disabled = false; }
+}
+$('#attRescan').onclick = refreshAttachmentFiles;
+async function startAttachmentAction(action, body) {
+  if (!S.run || S.state.busy) return;
+  const id = S.run.id;
+  S.state.busy = true;
+  renderAll();
+  try {
+    await api(`/api/runs/${encodeURIComponent(id)}/${action}`, { body });
+  } finally {
+    S.state = await api('/api/state');
+    if (S.run?.id === id) S.run = await api(`/api/runs/${encodeURIComponent(id)}`);
+    renderAll();
+  }
+}
+$('#extractedFiles').onclick = guard(async (event) => {
+  const button = event.target.closest('[data-extract-path]');
+  if (!button || S.state.busy) return;
+  button.disabled = true;
+  try {
+    await startAttachmentAction('extract', { path: button.dataset.extractPath });
+  } catch (error) { button.disabled = false; throw error; }
+});
 
 // Pause point of the pipeline: the evidence gate at the Log step (Review / Manual).
 function maybePromptGate() {
@@ -1342,20 +1450,20 @@ $('#attRun').onclick = guard(async () => {
   const names = attBoxes().filter((b) => b.checked).map((b) => list[+b.dataset.i].filename);
   if (!names.length) throw new Error(t('att.nothing'));
   const fixed = !!(S.run.inputs.data_dir || '').trim();
-  await api(`/api/runs/${encodeURIComponent(S.run.id)}/attachments`,
-    { body: fixed ? { names } : { names, folder: $('#attFolder').value.trim() } });
-  S.state.busy = true;
-  S.run.att_progress = S.run.att_progress || { phase: 'download', done: 0, total: names.length, name: '', pct: null };
-  closeModals();
-  renderButtons();
-  renderAttProgress();
+  await startAttachmentAction('attachments', fixed ? { names } : { names, folder: $('#attFolder').value.trim() });
 });
 $('#attStop').onclick = guard(() => api('/api/stop', { body: {} }));
-$('#attProgBtn').onclick = () => { renderAttProgress(); openModal('#attProgModal'); };
+$('#attProgBtn').onclick = openAttachments;
 
 // Download progress lives behind the button under the checkbox; it is never forced open.
 function renderAttProgress() {
   const p = S.run && S.run.att_progress;
+  const result = S.run && S.run.att_result;
+  const key = JSON.stringify([S.run?.id, result?.updated, S.state.busy]);
+  if (!$('#attProgModal').hidden) {
+    renderAttachmentChoices();
+    if (S.attFilesKey !== key) { S.attFilesKey = key; refreshAttachmentFiles(); }
+  }
   $('#attProgBtn').classList.toggle('is-active', !!p);
   $('#attProgBtnText').textContent = p
     ? t('att.progBtnActive', { done: p.done, total: p.total, pct: p.pct != null ? ` ${p.pct}%` : '' })
@@ -1370,10 +1478,10 @@ function renderAttProgress() {
     $('#attProgressName').textContent = p.name || '';
     $('#attProgressBar').style.width = `${Math.max(pct, 3)}%`;
     renderAttFiles(p.files || []);
-  } else if (S.attWorking) {
-    S.attWorking = false;
-    $('#attProgModal').hidden = true;
+  } else {
+    renderAttFiles(result?.files || []);
   }
+  for (const button of $('#extractedFiles').querySelectorAll('[data-extract-path]')) button.disabled = S.state.busy;
 }
 // One bar per file: queued -> downloading (percent) -> downloaded / already present / failed -> extracting -> ready.
 function renderAttFiles(files) {
@@ -1383,7 +1491,7 @@ function renderAttFiles(files) {
     return `<li class="att-file s-${esc(f.state)}">
       <div class="att-file-top"><span class="att-file-name" title="${esc(f.name)}">${esc(f.name)}</span>
         <span class="muted small">${f.size ? fmtSize(f.size) : ''}</span>
-        <span class="att-file-state">${esc(t('att.st.' + f.state))}${pct ? ' · ' + pct : ''}</span></div>
+        <span class="att-file-state">${esc(t('att.st.' + f.state))}${pct ? ' · ' + pct : ''}</span></div>${f.error ? `<p class="att-error">${esc(f.error)}</p>` : ''}
       <div class="att-bar-track"><div class="att-bar-fill" style="width:${width(f)}%"></div></div></li>`;
   }).join('');
 }
@@ -1477,15 +1585,19 @@ $('#runFrom').onclick = guard(() => startStep(S.selected, false, S.selected === 
 // ---------------------------------------------------------------- setup modal
 function openModal(id) { $(id).hidden = false; }
 function closeModals() { for (const m of document.querySelectorAll('.modal')) m.hidden = true; }
-for (const b of document.querySelectorAll('[data-close]')) b.onclick = closeModals;
-for (const m of document.querySelectorAll('.modal')) m.onclick = (e) => { if (e.target === m) closeModals(); };
+for (const b of document.querySelectorAll('[data-close]')) b.onclick = () => { b.closest('.modal').hidden = true; };
+for (const m of document.querySelectorAll('.modal')) m.onclick = (e) => { if (e.target === m) m.hidden = true; };
 document.addEventListener('click', (e) => {
   const button = e.target.closest('[data-help]');
   if (!button) return;
   e.preventDefault();
   e.stopPropagation();
   $('#helpTitle').textContent = t('help.title');
-  $('#helpText').textContent = t(button.dataset.help);
+  const text = t(button.dataset.help);
+  $('#helpText').innerHTML = text.startsWith('• ')
+    ? `<ul>${text.split('\n\n').filter((line) => line.startsWith('• ')).map((line) => `<li>${esc(line.slice(2))}</li>`).join('')}</ul>`
+      + text.split('\n\n').filter((line) => !line.startsWith('• ')).map((line) => `<p>${esc(line)}</p>`).join('')
+    : esc(text);
   openModal('#helpModal');
 });
 
@@ -1547,6 +1659,66 @@ $('#tokenForm').onsubmit = guard(async (e) => {
 });
 
 // ---------------------------------------------------------------- settings modal
+function bindSettingsModelPicker(id, mode) {
+  const input = $('#' + id);
+  const wrapper = document.createElement('div');
+  wrapper.className = 'settings-model-pick';
+  input.before(wrapper);
+  wrapper.append(input);
+  const toggle = document.createElement('button');
+  toggle.type = 'button';
+  toggle.className = 'model-caret';
+  toggle.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="m6 9 6 6 6-6" fill="none" stroke="currentColor" stroke-width="2"/></svg>';
+  toggle.dataset.i18nTitle = 'model.pick';
+  const menu = document.createElement('ul');
+  menu.id = id + 'Menu';
+  menu.className = 'model-menu';
+  menu.role = 'listbox';
+  menu.hidden = true;
+  wrapper.append(toggle, menu);
+  input.setAttribute('role', 'combobox');
+  input.setAttribute('aria-controls', menu.id);
+  input.setAttribute('aria-expanded', 'false');
+  let hot = -1;
+  const close = () => { menu.hidden = true; input.setAttribute('aria-expanded', 'false'); input.removeAttribute('aria-activedescendant'); };
+  const open = () => {
+    const known = (S.state.models || {})[mode] || [];
+    const current = input.value.trim() || (mode === 'copilot' ? 'auto' : '');
+    const values = [...new Set([...(current && !known.includes(current) ? [current] : []), ...known])];
+    menu.innerHTML = values.map((value, index) => `<li id="${id}Option${index}" role="option" aria-selected="${value === current}" data-value="${esc(value)}">${esc(value)}</li>`).join('')
+      + `<li class="model-hint" role="presentation">${esc(t('model.hint'))}</li>`;
+    menu.hidden = false;
+    input.setAttribute('aria-expanded', 'true');
+    hot = -1;
+  };
+  input.onfocus = open;
+  input.onblur = close;
+  toggle.onmousedown = (event) => event.preventDefault();
+  toggle.onclick = () => { if (menu.hidden) { input.focus(); open(); } else close(); };
+  menu.onmousedown = (event) => event.preventDefault();
+  menu.onclick = (event) => {
+    const option = event.target.closest('[data-value]');
+    if (option) { input.value = option.dataset.value === 'auto' ? '' : option.dataset.value; close(); }
+  };
+  input.onkeydown = (event) => {
+    if (event.key === 'Escape' || event.key === 'Enter') {
+      if (!menu.hidden) { event.preventDefault(); close(); }
+      return;
+    }
+    if (!['ArrowDown', 'ArrowUp'].includes(event.key)) return;
+    event.preventDefault();
+    if (menu.hidden) open();
+    const options = [...menu.querySelectorAll('[role="option"]')];
+    if (!options.length) return;
+    hot = (hot + (event.key === 'ArrowDown' ? 1 : hot < 0 ? 0 : -1) + options.length) % options.length;
+    options.forEach((option, index) => option.classList.toggle('hot', index === hot));
+    input.value = options[hot].dataset.value === 'auto' ? '' : options[hot].dataset.value;
+    input.setAttribute('aria-activedescendant', options[hot].id);
+    options[hot].scrollIntoView({ block: 'nearest' });
+  };
+}
+bindSettingsModelPicker('s_cli', 'copilot');
+bindSettingsModelPicker('s_m365', 'm365');
 $('#settingsBtn').onclick = () => {
   const s = S.state.settings;
   for (const el of $('#settingsForm').elements) {
@@ -1554,6 +1726,7 @@ $('#settingsBtn').onclick = () => {
     if (el.type === 'checkbox') el.checked = !!s[el.name];
     else el.value = s[el.name] ?? '';
   }
+  I18N.apply($('#settingsForm'));
   openModal('#settingsModal');
 };
 $('#settingsForm').onsubmit = guard(async (e) => {

@@ -488,3 +488,79 @@
   if (!LANGS.includes(lang)) lang = 'vi';
   window.I18N = { t, apply, set, extend, get lang() { return lang; }, get locale() { return LOCALES[lang]; } };
 })();
+
+I18N.extend("vi", {
+  "history.delete": "Xóa mục lịch sử",
+  "history.deleteConfirm": "Xóa item này? Lần đang chạy và file đã tải về Downloads được giữ lại.",
+  "history.yes": "Yes",
+  "history.cancel": "Cancel",
+  "history.deleted": "Đã xóa mục lịch sử",
+  "history.keptRunning": "Đã giữ lại mục này vì tác vụ đang chạy",
+  "att.ticketTab": "Tệp từ ticket",
+  "att.filesTab": "File sau giải nén",
+  "att.filesHint": "Các tệp đã tải và file tìm được sau giải nén. Nếu còn archive bên trong, bấm Giải nén tiếp để xem và dùng log bên trong.",
+  "att.filesEmpty": "Chưa có file đã tải hoặc đã giải nén. Chọn tệp ở tab Tệp từ ticket rồi tải về.",
+  "att.rescan": "Quét lại",
+  "att.extractMore": "Giải nén tiếp",
+  "att.extractAgain": "Đã giải nén",
+  "att.needTicket": "Chạy bước Jira để phát hiện tệp đính kèm trước.",
+  "att.run": "Tải về → Giải nén",
+  "att.progTitle": "Tải / giải nén tệp đính kèm",
+  "att.progBtn": "Tiến độ tải / giải nén tệp đính kèm",
+  "att.st.cancelled": "Đã dừng — có thể thử lại",
+  "att.hint": "Tệp đã tải đủ dung lượng được dùng lại. Chọn một part sẽ tải cả bộ archive. Log sau giải nén được thêm vào Log brief; tab File sau giải nén cho phép giải nén tiếp archive bên trong.",
+  "cfg.m365Group": "Chỉ dùng cho M365 Copilot",
+  "cfg.spaceHelp": "Space trên Collab sẽ chứa report. Nhập space key, không phải tên hiển thị; dấu ~ dùng space cá nhân theo cấu hình máy chủ.",
+  "cfg.parentHelp": "ID trang cha trên Collab. Report được tạo bên dưới trang này; để trống để tạo trong space đã chọn.",
+  "cfg.m365Help": "Tên model hiển thị trong M365 Copilot. Chọn gợi ý hoặc nhập tên đúng như trong M365. Chỉ áp dụng khi dùng chế độ M365.",
+  "cfg.cliHelp": "Model dùng cho phân tích bằng Copilot CLI và trợ lý AI. Chọn trong danh sách hoặc nhập model ID khác. Để trống hoặc chọn auto để CLI dùng mặc định.",
+  "cfg.refineHelp": "Model Copilot CLI dùng cho lượt tinh chỉnh định dạng XHTML ở bước AI format. Có thể dùng model nhỏ hơn để tiết kiệm token; để trống dùng mặc định CLI.",
+  "cfg.budgetHelp": "Trần token của toàn bộ log brief gửi AI: 2.000–50.000, gồm tiêu đề và bảng. Giảm để tiết kiệm context; log dài được chọn lọc, không gửi toàn bộ.",
+  "cfg.downloadHelp": "Thư mục gốc lưu tệp đính kèm, mỗi ticket có thư mục con theo issue key. Để trống dùng Downloads\\TicketAnalyzer\\<ISSUE>. Folder lưu trữ thông tin ticket riêng sẽ được ưu tiên.",
+  "cfg.axelHelp": "Đường dẫn chương trình axel để tăng tốc tải tệp. Để trống dùng bản đi kèm rồi tìm trên PATH. Nếu axel không phù hợp hoặc tải lỗi, tool chuyển sang HTTP.",
+  "cfg.axelConnHelp": "Số kết nối axel tối đa cho mỗi tệp (1–64, mặc định 8). Tệp nhỏ dùng ít kết nối hơn; quá nhiều kết nối có thể bị máy chủ giới hạn.",
+  "cfg.gateHelp": "Chế độ xử lý áp dụng cho ticket mới. Có thể đổi riêng cho từng ticket ở màn hình chính. Bấm (?) cạnh Chế độ xử lý để xem chi tiết từng mode.",
+  "cfg.dlcapHelp": "Tổng dung lượng ảnh và log/archive được tải tự động hoặc đề xuất ở chế độ Duyệt, đơn vị MB. 0 = không giới hạn. Archive nhiều part tính cả bộ; vẫn có thể tải thủ công trong cửa sổ tệp đính kèm.",
+  "cfg.retriesHelp": "Số lần thử thêm sau lỗi AI tạm thời (0–3), ngoài lần gọi đầu tiên. Thử lại có thể dùng thêm token và thời gian.",
+  "gate.help": "• Tự động (Skip): AI chuẩn hóa giờ, xếp hạng tệp và tải trong giới hạn tổng dung lượng. Archive nhiều part phải đủ bộ; log được tóm lược trước khi phân tích.\n\n• Duyệt (Review): AI đề xuất tệp và khung giờ. Bạn chỉnh sửa, thêm/bỏ tệp rồi xác nhận tải và chạy tiếp.\n\n• Tự nhập (Manual): bạn tự chọn tệp, khung giờ và múi giờ UTC; bỏ qua bước AI hiểu ticket. Để trống giờ để dùng toàn bộ log.\n\nKhông có log vẫn tiếp tục phân tích ticket và ảnh."
+});
+
+I18N.extend("en", {
+  "history.delete": "Delete history item",
+  "history.deleteConfirm": "Delete this item? The active run and files downloaded to Downloads are kept.",
+  "history.yes": "Yes",
+  "history.cancel": "Cancel",
+  "history.deleted": "History item deleted",
+  "history.keptRunning": "This item was kept because its task is running",
+  "att.ticketTab": "Ticket attachments",
+  "att.filesTab": "Files after extraction",
+  "att.filesHint": "Downloaded files and files found after extraction. Use Extract to unpack an inner archive and add its logs to analysis.",
+  "att.filesEmpty": "No downloaded or extracted files yet. Select and download files in Ticket attachments.",
+  "att.rescan": "Rescan",
+  "att.extractMore": "Extract",
+  "att.extractAgain": "Extracted",
+  "att.needTicket": "Run the Jira step to discover attachments first.",
+  "att.run": "Download → Extract",
+  "att.progTitle": "Attachment downloads / extraction",
+  "att.progBtn": "Attachment downloads / extraction",
+  "att.st.cancelled": "Stopped — retry available",
+  "att.hint": "Complete downloads are reused. Selecting one part downloads the whole archive set. Extracted logs feed Log brief; use Files after extraction to unpack inner archives.",
+  "cfg.m365Group": "M365 Copilot settings",
+  "cfg.spaceHelp": "The Collab space that receives reports. Enter its space key rather than its display name; ~ uses the server’s configured personal space.",
+  "cfg.parentHelp": "Collab parent page ID. New reports are created under this page; leave empty to create them in the selected space.",
+  "cfg.m365Help": "Model display name in M365 Copilot. Pick a suggestion or enter the name exactly as shown in M365. Applies to M365 mode.",
+  "cfg.cliHelp": "Model for Copilot CLI analysis and the AI assistant. Pick from the list or type another model ID. Empty or auto uses the CLI default.",
+  "cfg.refineHelp": "Copilot CLI model for the XHTML formatting refinement pass. A smaller model can reduce cost; empty uses the CLI default.",
+  "cfg.budgetHelp": "Maximum tokens for the full log brief sent to AI: 2,000–50,000, including headings and tables. Lower it to save context; long logs are filtered.",
+  "cfg.downloadHelp": "Root attachment download folder; each ticket has an issue-key subfolder. Empty uses Downloads\\TicketAnalyzer\\<ISSUE>. A ticket-specific data folder takes priority.",
+  "cfg.axelHelp": "Path to axel for parallel downloads. Empty uses the bundled copy, then PATH. The app falls back to HTTP when axel cannot handle a file or fails.",
+  "cfg.axelConnHelp": "Maximum axel connections per file (1–64, default 8). Small files use fewer connections; too many can trigger server limits.",
+  "cfg.gateHelp": "Handling mode for new tickets. Override it per ticket on the main screen; use the help beside Handling mode for the differences.",
+  "cfg.dlcapHelp": "Total image and log/archive download budget in MB for Auto and Review proposals. 0 means unlimited. Multipart archives count as a complete set; manual downloads remain available.",
+  "cfg.retriesHelp": "Additional attempts after a transient AI error (0–3), beyond the first call. Retries can consume additional tokens and time.",
+  "gate.help": "• Automatic (Skip): AI normalizes times, ranks files and downloads within the total budget. Multipart archives require the full set; logs are summarized before analysis.\n\n• Review: AI proposes files and times. Edit the selection, then confirm downloading and continuing.\n\n• Manual: choose files, incident times and UTC time zone yourself; AI ticket understanding is skipped. Empty times use the full log range.\n\nAnalysis continues with the ticket and images even without logs."
+});
+
+I18N.extend("vi", {"sub.understand": "Context sơ bộ và kế hoạch kiểm tra bằng chứng"});
+
+I18N.extend("en", {"sub.understand": "Preliminary context and evidence plan"});

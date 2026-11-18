@@ -92,7 +92,7 @@
             <div id="logChips" class="chips"></div>
             <button class="btn btn-ghost" id="pickLogs" data-i18n="in.pickLogs">Chọn file…</button>
           </div>
-          <div class="check-help">
+          <div class="check-help inline-option-help">
             <label class="check small-check"><input type="checkbox" id="autoAtt"> <span data-i18n="in.autoAtt"></span></label>
             <button type="button" class="help-icon" data-help="in.autoAttHelp" data-i18n-title="help.open" aria-label="?">?</button>
           </div>
@@ -107,7 +107,7 @@
             <button class="btn btn-ghost" id="pickSource" data-i18n="in.pickSource">Chọn folder…</button>
           </div>
           <div class="muted small" data-i18n="in.sourceHint">Source này tạo catalog cho Log brief; Code Graph có thể bật/tắt riêng.</div>
-          <div class="check-help">
+          <div class="check-help inline-option-help">
             <label class="check small-check"><input type="checkbox" id="useCodeGraph"> <span data-i18n="in.useCodeGraph">Dùng Code Graph</span></label>
             <button type="button" class="help-icon" data-help="in.useCodeGraphHelp" data-i18n-title="help.open" aria-label="?">?</button>
           </div>
@@ -224,32 +224,35 @@
         <button class="icon-btn" type="button" data-close data-i18n-title="drawer.close">✕</button>
       </div>
       <div class="grid2">
-        <div class="field"><label for="s_space" data-i18n="cfg.space">Collab space key</label><input id="s_space" name="collab_space_key"></div>
-        <div class="field"><label for="s_parent"><span data-i18n="cfg.parent">Parent page ID</span> <span class="muted" data-i18n="in.optional"></span></label><input id="s_parent" name="collab_parent_id"></div>
-        <div class="field"><label for="s_m365" data-i18n="cfg.m365">Model M365</label><input id="s_m365" name="m365_model"></div>
-        <div class="field"><label for="s_cli"><span data-i18n="cfg.cli">Model Copilot CLI</span> <span class="muted" data-i18n="cfg.cliHint"></span></label><input id="s_cli" name="copilot_model" placeholder="gpt-6-luna" list="copilotModels" autocomplete="off"></div>
-        <div class="field"><label for="s_refine"><span data-i18n="cfg.refine">Model refine format</span> <span class="muted">(CLI)</span></label><input id="s_refine" name="refine_model" placeholder="claude-haiku-5.5" list="copilotModels" autocomplete="off"><datalist id="copilotModels"></datalist></div>
-        <div class="field"><label for="s_budget" data-i18n="cfg.budget">Token tối đa cho log brief</label><input id="s_budget" name="log_budget_tokens" type="number" min="2000" max="50000" step="1000"></div>
-        <div class="field span2"><label for="s_dl"><span data-i18n="cfg.download">Thư mục tải đính kèm</span> <span class="muted" data-i18n="cfg.downloadHint"></span></label><input id="s_dl" name="download_dir"></div>
-        <div class="field"><label for="s_axel"><span data-i18n="cfg.axel">axel</span> <span class="muted" data-i18n="cfg.axelHint"></span></label><input id="s_axel" name="axel_command" placeholder="axel.exe"></div>
-        <div class="field"><label for="s_axelN" data-i18n="cfg.axelConn">Số kết nối axel</label><input id="s_axelN" name="axel_connections" type="number" min="1" max="64"></div>
-        <div class="field"><label for="s_gate" data-i18n="cfg.gate">Chế độ xử lý mặc định</label>
+        <div class="field"><div class="check-help"><label for="s_space" data-i18n="cfg.space">Collab space key</label><button type="button" class="help-icon" data-help="cfg.spaceHelp" data-i18n-title="help.open">?</button></div><input id="s_space" name="collab_space_key"></div>
+        <div class="field"><div class="check-help"><label for="s_parent"><span data-i18n="cfg.parent">Parent page ID</span> <span class="muted" data-i18n="in.optional"></span></label><button type="button" class="help-icon" data-help="cfg.parentHelp" data-i18n-title="help.open">?</button></div><input id="s_parent" name="collab_parent_id"></div>
+        <div class="field"><div class="check-help"><label for="s_cli"><span data-i18n="cfg.cli">Model Copilot CLI</span> <span class="muted" data-i18n="cfg.cliHint"></span></label><button type="button" class="help-icon" data-help="cfg.cliHelp" data-i18n-title="help.open">?</button></div><input id="s_cli" name="copilot_model" placeholder="auto" autocomplete="off"></div>
+        <div class="field"><div class="check-help"><label for="s_refine"><span data-i18n="cfg.refine">Model refine format</span> <span class="muted">(CLI)</span></label><button type="button" class="help-icon" data-help="cfg.refineHelp" data-i18n-title="help.open">?</button></div><input id="s_refine" name="refine_model" placeholder="claude-haiku-5.5" list="copilotModels" autocomplete="off"><datalist id="copilotModels"></datalist></div>
+        <div class="field"><div class="check-help"><label for="s_budget" data-i18n="cfg.budget">Token tối đa cho log brief</label><button type="button" class="help-icon" data-help="cfg.budgetHelp" data-i18n-title="help.open">?</button></div><input id="s_budget" name="log_budget_tokens" type="number" min="2000" max="50000" step="1000"></div>
+        <div class="field span2"><div class="check-help"><label for="s_dl"><span data-i18n="cfg.download">Thư mục tải đính kèm</span> <span class="muted" data-i18n="cfg.downloadHint"></span></label><button type="button" class="help-icon" data-help="cfg.downloadHelp" data-i18n-title="help.open">?</button></div><input id="s_dl" name="download_dir"></div>
+        <div class="field"><div class="check-help"><label for="s_axel"><span data-i18n="cfg.axel">axel</span> <span class="muted" data-i18n="cfg.axelHint"></span></label><button type="button" class="help-icon" data-help="cfg.axelHelp" data-i18n-title="help.open">?</button></div><input id="s_axel" name="axel_command" placeholder="axel.exe"></div>
+        <div class="field"><div class="check-help"><label for="s_axelN" data-i18n="cfg.axelConn">Số kết nối axel</label><button type="button" class="help-icon" data-help="cfg.axelConnHelp" data-i18n-title="help.open">?</button></div><input id="s_axelN" name="axel_connections" type="number" min="1" max="64"></div>
+        <div class="field"><div class="check-help"><label for="s_gate" data-i18n="cfg.gate">Chế độ xử lý mặc định</label><button type="button" class="help-icon" data-help="cfg.gateHelp" data-i18n-title="help.open">?</button></div>
           <select id="s_gate" name="default_gate">
             <option value="skip" data-i18n="gate.skipLong">Tự động (Skip)</option>
             <option value="review" data-i18n="gate.reviewLong">Duyệt (Review)</option>
             <option value="manual" data-i18n="gate.manualLong">Tự nhập (Manual)</option>
           </select></div>
-        <div class="field"><label for="s_dlcap"><span data-i18n="cfg.dlcap">Giới hạn tải tự động (MB)</span> <span class="muted" data-i18n="cfg.dlcapHint"></span></label><input id="s_dlcap" name="auto_download_max_mb" type="number" min="0" max="1000000" step="100"></div>
-        <div class="field"><label for="s_retries" data-i18n="cfg.retries">Số lần thử lại AI</label><input id="s_retries" name="ai_retries" type="number" min="0" max="3"></div>
+        <div class="field"><div class="check-help"><label for="s_dlcap"><span data-i18n="cfg.dlcap">Giới hạn tải tự động (MB)</span> <span class="muted" data-i18n="cfg.dlcapHint"></span></label><button type="button" class="help-icon" data-help="cfg.dlcapHelp" data-i18n-title="help.open">?</button></div><input id="s_dlcap" name="auto_download_max_mb" type="number" min="0" max="1000000" step="100"></div>
+        <div class="field"><div class="check-help"><label for="s_retries" data-i18n="cfg.retries">Số lần thử lại AI</label><button type="button" class="help-icon" data-help="cfg.retriesHelp" data-i18n-title="help.open">?</button></div><input id="s_retries" name="ai_retries" type="number" min="0" max="3"></div>
       </div>
-      <div class="check-help">
-        <label class="check"><input type="checkbox" name="review_before_publish"> <span data-i18n="cfg.review"></span></label>
-        <button type="button" class="help-icon" data-help="cfg.reviewHelp" data-i18n-title="help.open" aria-label="?">?</button>
-      </div>
+      <fieldset class="m365-settings"><legend data-i18n="cfg.m365Group">M365 Copilot</legend>
+<div class="field"><div class="check-help"><label for="s_m365" data-i18n="cfg.m365">Model M365</label><button type="button" class="help-icon" data-help="cfg.m365Help" data-i18n-title="help.open">?</button></div><input id="s_m365" name="m365_model"></div>
       <div class="check-help">
         <label class="check"><input type="checkbox" name="m365_headless"> <span data-i18n="cfg.headless"></span></label>
         <button type="button" class="help-icon" data-help="cfg.headlessHelp" data-i18n-title="help.open" aria-label="?">?</button>
       </div>
+      </fieldset>
+      <div class="check-help">
+        <label class="check"><input type="checkbox" name="review_before_publish"> <span data-i18n="cfg.review"></span></label>
+        <button type="button" class="help-icon" data-help="cfg.reviewHelp" data-i18n-title="help.open" aria-label="?">?</button>
+      </div>
+
       <div class="check-help">
         <label class="check"><input type="checkbox" name="assistant_proactive"> <span data-i18n="cfg.asstProactive"></span></label>
         <button type="button" class="help-icon" data-help="cfg.asstProactiveHelp" data-i18n-title="help.open" aria-label="?">?</button>
@@ -265,18 +268,34 @@
         <h3 id="helpTitle"></h3>
         <button class="icon-btn" type="button" data-close data-i18n-title="help.close">✕</button>
       </div>
-      <p id="helpText" class="help-text"></p>
+      <div id="helpText" class="help-text"></div>
       <div class="modal-foot"><button class="btn" type="button" data-close data-i18n="help.close">Đóng</button></div>
     </div>
   </div>
 
   <!-- jira attachment selection -->
-  <div id="attModal" class="modal" hidden>
-    <div class="modal-box att-box">
+  <div id="attProgModal" class="modal" hidden>
+    <div class="modal-box att-box" role="dialog" aria-modal="true" aria-labelledby="attTitle">
       <div class="modal-head">
-        <div><h3 data-i18n="att.title">Tệp đính kèm</h3><div id="attSub" class="muted small"></div></div>
+        <div><h3 id="attTitle" data-i18n="att.progTitle">Tải / giải nén tệp đính kèm</h3><div id="attSub" class="muted small"></div></div>
         <button class="icon-btn" data-close data-i18n-title="drawer.close">✕</button>
       </div>
+      <div class="drawer-tabs" role="tablist" data-i18n-title="att.title" id="attachmentTabs">
+        <button type="button" class="tab active" role="tab" id="ticketAttachmentsTab" aria-controls="ticketAttachmentsPanel" aria-selected="true" data-i18n="att.ticketTab">Tệp từ ticket</button>
+        <button type="button" class="tab" role="tab" id="extractedFilesTab" aria-controls="extractedFilesPanel" aria-selected="false" tabindex="-1" data-i18n="att.filesTab">File sau giải nén</button>
+      </div>
+      <div id="attProgActive" class="att-progress" hidden>
+        <div class="att-progress-top">
+          <span class="spinner" aria-hidden="true"></span>
+          <strong id="attProgressText"></strong>
+          <button class="btn btn-danger btn-sm" id="attStop"><span data-i18n="run.stop">Dừng</span></button>
+        </div>
+        <div class="att-bar-track"><div id="attProgressBar" class="att-bar-fill"></div></div>
+        <div id="attProgressName" class="muted small"></div>
+      </div>
+      <div id="attProgIdle" class="muted small" data-i18n="att.progIdle"></div>
+      <ol id="attProgressFiles" class="att-files" aria-live="polite"></ol>
+      <section id="ticketAttachmentsPanel" role="tabpanel" aria-labelledby="ticketAttachmentsTab">
       <div class="att-head">
         <div class="field"><label for="attFolder" data-i18n="att.folder">Tải về thư mục</label><input id="attFolder" autocomplete="off"></div>
         <button class="btn btn-ghost" id="attPick" data-i18n="att.pick">Chọn…</button>
@@ -292,29 +311,19 @@
         <button class="btn btn-ghost" id="attSkip"></button>
         <button class="btn btn-primary" id="attRun" data-i18n="att.run">Tải về & đưa vào phân tích</button>
       </div>
+      </section>
+      <section id="extractedFilesPanel" role="tabpanel" aria-labelledby="extractedFilesTab" hidden>
+        <div class="att-bar"><p class="muted small" data-i18n="att.filesHint"></p><button type="button" class="btn btn-sm" id="attRescan" data-i18n="att.rescan">Quét lại</button></div>
+        <div id="extractedFiles" class="att-list" aria-live="polite"></div>
+      </section>
     </div>
   </div>
 
-  <!-- attachment download progress (opened on demand) -->
-  <div id="attProgModal" class="modal" hidden>
-    <div class="modal-box att-box">
-      <div class="modal-head">
-        <h3 data-i18n="att.progTitle">Tiến độ tải tệp đính kèm</h3>
-        <button class="icon-btn" data-close data-i18n-title="drawer.close">✕</button>
-      </div>
-      <div id="attProgActive" class="att-progress" hidden>
-        <div class="att-progress-top">
-          <span class="spinner" aria-hidden="true"></span>
-          <strong id="attProgressText"></strong>
-          <button class="btn btn-danger btn-sm" id="attStop">
-            <svg viewBox="0 0 24 24" width="14" height="14"><use href="#i-stop"/></svg> <span data-i18n="run.stop">Dừng</span>
-          </button>
-        </div>
-        <div class="att-bar-track"><div id="attProgressBar" class="att-bar-fill"></div></div>
-        <div id="attProgressName" class="muted small"></div>
-        <ol id="attProgressFiles" class="att-files" aria-live="polite"></ol>
-      </div>
-      <div id="attProgIdle" class="muted" data-i18n="att.progIdle"></div>
+  <div id="deleteRunModal" class="modal" hidden>
+    <div class="modal-box help-box" role="dialog" aria-modal="true" aria-labelledby="deleteRunTitle" aria-describedby="deleteRunText">
+      <h3 id="deleteRunTitle" data-i18n="history.delete">Xóa mục lịch sử</h3>
+      <p id="deleteRunIssue"></p><p id="deleteRunText" data-i18n="history.deleteConfirm"></p>
+      <div class="modal-foot"><button type="button" class="btn" data-close data-i18n="history.cancel">Cancel</button><button type="button" class="btn btn-danger" id="confirmDeleteRun" data-i18n="history.yes">Yes</button></div>
     </div>
   </div>
 

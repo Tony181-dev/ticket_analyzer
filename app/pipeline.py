@@ -27,7 +27,7 @@ from .report.refine_pipeline import DIAGRAM_HEADINGS, refine_report
 
 STEPS = [
     {"id": "jira", "title": "Jira ticket", "sub": "MCP jira_get_issue"},
-    {"id": "understand", "title": "AI hiểu ticket", "sub": "Lấy timestamp từ ticket"},
+    {"id": "understand", "title": "AI hiểu ticket", "sub": "Context sơ bộ & kế hoạch bằng chứng"},
     {"id": "log", "title": "Log brief", "sub": "LogSleuth + source catalog"},
     {"id": "graph", "title": "Code graph", "sub": "CodeGraph"},
     {"id": "analyze", "title": "AI phân tích", "sub": "Phân tích tổng hợp"},
@@ -45,8 +45,7 @@ ARTIFACTS = {
     # 01-attachments.json is still written (machine-readable list) but has no tab: the table says it all.
     "jira": [("01-jira.md", "Ticket", "md", False), ("01-jira.json", "JSON thô", "json", False),
              ("01-attachments.md", "Tệp đính kèm", "md", False)],
-    "understand": [("02-understanding.md", "Thời điểm trong ticket", "md", False),
-                   ("02-focus.json", "Khung giờ & từ khoá", "json", False)],
+    "understand": [("02-understanding.md", "Hiểu ticket", "md", False)],
     "log": [("03-log-brief.md", "Log brief", "md", False), ("03-log-span.md", "Khoảng giờ & múi giờ log", "md", False),
             ("03-catalog.md", "Catalog log", "md", False), ("03-log-stats.json", "LogSleuth stats", "json", False)],
     "graph": [("04-brain.html", "Sơ đồ tương tác", "html", False), ("04-GRAPH_REPORT.md", "Report", "md", False),
@@ -310,16 +309,17 @@ def _artifacts(run_id, step):
 
 
 def _save(run):
-    run["updated"] = time.time()
-    run["usage_total"] = usage_summary(run)
-    for step in ORDER:
-        run["steps"][step]["artifacts"] = _artifacts(run["id"], step)
-    meta = _meta_dir(run["id"])
-    meta.mkdir(parents=True, exist_ok=True)
-    tmp = meta / "run.json.tmp"
-    tmp.write_text(json.dumps(run, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(meta / "run.json")
-    events.publish("run", run=view(run))
+    with _lock:
+        run["updated"] = time.time()
+        run["usage_total"] = usage_summary(run)
+        for step in ORDER:
+            run["steps"][step]["artifacts"] = _artifacts(run["id"], step)
+        meta = _meta_dir(run["id"])
+        meta.mkdir(parents=True, exist_ok=True)
+        tmp = meta / "run.json.tmp"
+        tmp.write_text(json.dumps(run, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(meta / "run.json")
+        events.publish("run", run=view(run))
 
 
 def view(run):
@@ -395,17 +395,18 @@ def get(run_id):
 
 
 def list_runs(limit=50):
-    items = []
-    for file in sorted(paths.RUNS.glob("*/run.json"), key=lambda p: p.stat().st_mtime, reverse=True)[:limit]:
-        try:
-            run = json.loads(file.read_text(encoding="utf-8"))
-        except ValueError:
-            continue
-        done = sum(1 for s in run["steps"].values() if s["status"] == "done")
-        items.append({"id": run["id"], "issue": run["issue"], "summary": run.get("summary", ""),
-                      "created": run["created"], "done": done, "collab": run.get("collab") or {},
-                      "failed": any(s["status"] == "error" for s in run["steps"].values())})
-    return items
+    with _lock:
+        items = []
+        for file in sorted(paths.RUNS.glob("*/run.json"), key=lambda p: p.stat().st_mtime, reverse=True)[:limit]:
+            try:
+                run = json.loads(file.read_text(encoding="utf-8"))
+            except ValueError:
+                continue
+            done = sum(1 for s in run["steps"].values() if s["status"] == "done")
+            items.append({"id": run["id"], "issue": run["issue"], "summary": run.get("summary", ""),
+                          "created": run["created"], "done": done, "collab": run.get("collab") or {},
+                          "failed": any(s["status"] == "error" for s in run["steps"].values())})
+        return items
 
 
 def create(issue, log_files=(), source_dir="", auto_attachments=None, download_dir="", use_codegraph=None,
@@ -478,6 +479,22 @@ def clear_runs(keep=None):
                 _runs.pop(d.name, None)
                 removed += 1
     return removed
+
+
+def delete_run(run_id):
+    """Remove only this history entry; active work and external ticket/download folders survive."""
+    with _lock:
+        if executor.busy and executor.run_id == run_id:
+            return False
+        target = _meta_dir(run_id)
+        if target.resolve().parent != paths.RUNS.resolve() or target.is_symlink():
+            raise ValueError("Invalid run id")
+        if not get(run_id):
+            raise ValueError("Run not found")
+        shutil.rmtree(target)
+        _runs.pop(run_id, None)
+    events.publish("run_deleted", run_id=run_id)
+    return True
 
 
 def update_inputs(run_id, log_files=None, source_dir=None, auto_attachments=None, download_dir=None, use_codegraph=None,
@@ -834,6 +851,56 @@ class Executor:
             run["inputs"]["download_dir"] = str(folder).strip()
         self._download(run, names, "jira")
 
+    def extract_attachment(self, run_id, path):
+        """Unpack one inventoried archive in the background, including an archive inside another."""
+        run = self._idle_run(run_id)
+        inventory = attachment_files(run)
+        selected = next((f for f in inventory if f["path"] == path and f["extractable"]), None)
+        if not selected:
+            raise ValueError("Archive not found in this ticket's downloaded files")
+        archive = Path(path)
+        siblings = {f["name"] for f in inventory if Path(f["path"]).parent == archive.parent}
+        volumes = attachments.expand_archive_volumes([archive.name], siblings)
+        if not attachments.complete_volume_set(volumes):
+            raise ValueError("Incomplete multipart archive")
+        self.cancel.clear()
+        self.run_id = run_id
+        row = {"name": selected["relative_path"], "size": selected["size"], "state": "extract", "pct": 100}
+        run["att_progress"] = {"phase": "extract", "done": 0, "total": 1, "name": row["name"], "files": [row]}
+        _save(run)
+
+        def job():
+            events.publish("busy", run_id=run_id, busy=True)
+            try:
+                out = attachments.extract(archive, log=lambda m: _log(run, m), cancel=self.check)
+                if not out:
+                    raise RuntimeError(f"Extraction failed: {archive.name}")
+                self.check()
+                current = run["inputs"]["log_files"]
+                # Replace the archive input so LogSleuth does not process the same logs twice.
+                logs = [str(p) for p in attachments.logs_in(out)]
+                run["inputs"]["log_files"] = list(dict.fromkeys([f for f in current if f != path] + logs))
+                for item in run.get("attachments") or []:
+                    if item.get("path") == path:
+                        item["analyzed"] = True
+                run.setdefault("gate_state", {}).pop("skip_logs", None)
+                _refresh_skipped(run)
+                _mark_stale(run, "log")
+                row["state"] = "ready"
+            except Cancelled:
+                row["state"] = "cancelled"
+                _log(run, t("note.stopped"))
+            except Exception as exc:
+                row.update(state="failed", error=str(exc))
+                _log(run, f"✗ {exc}")
+            finally:
+                run["att_result"] = {"files": [row], "updated": time.time()}
+                run.pop("att_progress", None)
+                _save(run)
+                events.publish("busy", run_id=run_id, busy=False)
+        self.thread = threading.Thread(target=job, daemon=True)
+        self.thread.start()
+
     def resolve_gate(self, run_id, names=(), folder=None, time_start=None, time_end=None, shift_minutes=...,
                      skip_logs=False, ticket_utc_offset=...):
         """The user's answer at the evidence gate (Review / Manual): which attachments to download, the
@@ -952,6 +1019,9 @@ class Executor:
                 if added_volumes:
                     _log(run, t("log.att_split_volumes", selected=len(selected), added=added_volumes, total=len(names)))
                 added = _fetch_attachments(run, names, analyze, self.check, step) if names else 0
+                failed = [f["name"] for f in (run.get("att_result") or {}).get("files", []) if f["state"] == "failed"]
+                if resume and names and failed:
+                    raise RuntimeError("Download/extraction failed: " + ", ".join(failed))
                 state.update(before)
                 if step == "jira":
                     state["note"] = _jira_note(run, added)
@@ -1056,7 +1126,7 @@ def step_jira(run, cfg, ex):
     _write(run, "01-jira.md", f"# Jira Ticket Evidence — {run['issue']}\n\n"
            f"Link: {cfg['jira_browse_url'].rstrip('/')}/{run['issue']}\n\n```json\n{pretty}\n```\n")
     found = attachments.from_issue_json(text)
-    if not found and run["inputs"].get("auto_attachments"):
+    if not found:
         try:
             found = attachments.list_rest(run["issue"])
         except Exception as exc:  # listing attachments must never fail the Jira step
@@ -1143,6 +1213,35 @@ def attachment_folder(run):
     return Path(custom) / run["issue"] if custom else attachments.default_folder(run["issue"])
 
 
+def attachment_files(run):
+    """Inventory only registered downloads and their extracted descendants; never follow links out."""
+    found = {}
+    for item in run.get("attachments") or []:
+        if not item.get("path"):
+            continue
+        source = Path(item["path"])
+        if not source.is_file() or source.is_symlink():
+            continue
+        root = source.parent.resolve()
+        extracted = source.with_name(source.name + "_extracted")
+        candidates = [source]
+        if extracted.is_dir() and not extracted.is_symlink():
+            candidates.extend(extracted.rglob("*"))
+        for path in candidates:
+            if path.name == attachments.EXTRACT_MARKER or path.is_symlink() or not path.is_file():
+                continue
+            resolved = path.resolve()
+            if root not in resolved.parents:
+                continue
+            archive = attachments.kind_of(path.name) == "archive"
+            found[str(path)] = {"path": str(path), "name": path.name, "relative_path": str(path.relative_to(source.parent)),
+                                "origin": item["filename"], "size": path.stat().st_size,
+                                "kind": attachments.kind_of(path.name),
+                                "extractable": archive and not attachments.is_volume_continuation(path.name),
+                                "extracted": bool(archive and attachments.extracted_folder(path))}
+    return sorted(found.values(), key=lambda f: (f["origin"], f["relative_path"]))
+
+
 def _progress_files(items):
     """{filename: progress row} for the per-file progress bars, in download order."""
     return {a["filename"]: {"name": a["filename"], "size": attachments.parse_size(a.get("size")), "state": "queued",
@@ -1161,20 +1260,27 @@ def _fetch_attachments(run, names, analyze, cancel, step="jira", max_bytes=None)
     _log(run, t("log.att_download", n=len(items), folder=folder))
     state = run["steps"][step]
     state.update(status="running", error="")
-    files = _progress_files(items)
+    progress_files = _progress_files(items)
     finished = {"downloaded", "present", "failed", "extracted"}
 
     def progress(phase, done, total, name, pct=None):
-        entry = files.get(name)
+        entry = progress_files.get(name)
         if entry:  # one row per file: queued -> download (pct) -> done / present / failed -> extract -> ready
             entry.update({"download": {"state": "download", "pct": pct if pct is not None else entry["pct"] or 0},
                           "downloaded": {"state": "done", "pct": 100}, "present": {"state": "present", "pct": 100},
                           "failed": {"state": "failed"}, "extract": {"state": "extract"},
                           "extracted": {"state": "ready"}}.get(phase, {}))
+            # Persist successful downloads immediately, even if a later download/extraction is stopped.
+            for item in items:
+                if item["filename"] == name:
+                    if phase in ("downloaded", "present"):
+                        item["path"] = str(folder / attachments._safe_name(name))
+                    if phase == "extracted":
+                        item["analyzed"] = True
         overall = "extract" if phase.startswith("extract") else "download"
         count = done + 1 if phase in finished else done
         run["att_progress"] = {"phase": overall, "done": count, "total": total, "name": name,
-                               "pct": pct if phase == "download" else None, "files": list(files.values())}
+                               "pct": pct if phase == "download" else None, "files": list(progress_files.values())}
         state["note"] = t("note.att_" + overall, done=count, total=total, name=name)
         _save(run)
 
@@ -1182,12 +1288,20 @@ def _fetch_attachments(run, names, analyze, cancel, step="jira", max_bytes=None)
         limits = {"max_bytes": max_bytes} if max_bytes is not None else {}
         logs, files = attachments.collect(run["issue"], items, analyze, folder, log=lambda m: _log(run, m), cancel=cancel,
                                           progress=progress, **limits)
+    except BaseException as exc:
+        for row in progress_files.values():
+            if row["state"] in ("queued", "download", "extract"):
+                row["state"] = "cancelled" if isinstance(exc, Cancelled) else "failed"
+        raise
     finally:
+        run["att_result"] = {"files": list(progress_files.values()), "updated": time.time()}
         run.pop("att_progress", None)
+        _save(run)
     for a in run["attachments"]:
         if a["filename"] in files:
             a["path"] = files[a["filename"]]
-            a["analyzed"] = a["filename"] in analyze or a.get("analyzed", False)
+            # Do not label an archive as analyzed when extraction failed.
+            a["analyzed"] = a.get("analyzed", False) or (_is_image(a) and a["filename"] in analyze)
     current = run["inputs"]["log_files"]
     added = [f for f in logs if f not in current]
     run["inputs"]["log_files"] = current + added
@@ -1364,12 +1478,13 @@ def step_understand(run, cfg, ex):
                "Account for whole multipart sets and the total download budget" if choose else ""))
     answer = _ask_ai(run, cfg, (f"Jira issue {run['issue']}. Read only the attached Jira ticket"
                                 + (" and the attachment list" if choose else "") + f" and follow understand.md to {task}. "
-                                "Do not inspect logs or source code."),
+                                "First write a preliminary Markdown understanding of the ticket, then the internal JSON. "
+                                "Do not inspect logs or source code. " + _write_in()),
                      files, run_dir(run["id"]), session_id=run["session_id"])
     ex.check()
     answer = storage.strip_chat_wrappers(answer)
-    _write(run, "02-understanding.md", answer)
     focus = _parse_focus(answer)
+    _write(run, "02-understanding.md", _understanding_text(answer, run, focus))
     typed = normalize_windows((run.get("focus") or {}).get("extra_windows"))
     focus = _clean_focus({**focus, "extra_windows": typed})  # ranges typed by hand survive a fresh AI reading
     if not choose:
@@ -1403,6 +1518,25 @@ def step_understand(run, cfg, ex):
 
 def _parse_focus(answer):
     return parse_focus(answer)
+
+
+def _understanding_text(answer, run, focus):
+    """Keep the triage JSON internal, including compatibility with older JSON-only AI responses."""
+    narrative = re.sub(r"```json\s*[\s\S]*?```", "", answer, flags=re.I).strip()
+    try:
+        if isinstance(json.loads(narrative), dict):
+            narrative = ""
+    except (ValueError, TypeError):
+        pass
+    if narrative:
+        return narrative + "\n"
+    labels = {
+        "vi": ("Hiểu sơ bộ ticket", "Chưa có bản diễn giải từ AI. Chưa kiểm tra log, ảnh hoặc source code."),
+        "en": ("Preliminary ticket understanding", "AI did not provide a narrative. Logs, images and source code have not been inspected."),
+        "ko": ("티켓 예비 이해", "AI가 설명을 제공하지 않았습니다. 로그, 이미지, 소스 코드는 아직 확인하지 않았습니다."),
+    }
+    title, note = labels.get(_lang_code(), labels["en"])
+    return f"# {title} — {run['issue']}\n\n{run.get('summary') or ''}\n\n{focus.get('reason') or ''}\n\n{note}\n"
 
 
 def _clean_focus(data):
@@ -1990,8 +2124,8 @@ def _wants_evidence(run):
 
 APPLICABLE = {
     "jira": lambda r: True,
-    # Manual gate: the user types the time window, so the AI triage is not asked.
-    "understand": lambda r: r["inputs"].get("gate") != "manual" and _wants_evidence(r),
+    # Ticket context is useful even without downloadable evidence. Manual still opts out of AI triage.
+    "understand": lambda r: r["inputs"].get("gate") != "manual",
     "log": lambda r: _wants_evidence(r) and not (r.get("gate_state") or {}).get("skip_logs"),
     "graph": lambda r: bool(r["inputs"].get("source_dir")) and bool(r["inputs"].get("use_codegraph", True)),
     "analyze": lambda r: True, "format": lambda r: True, "collab": lambda r: True,

@@ -16,6 +16,9 @@
   POST /api/runs/<id>/timezone -> answer the time-zone question {mode: auto|suggested|manual|bypass, shift_minutes?,
                                   time_start?, time_end?, ticket_utc_offset?}
   POST /api/runs/<id>/attachments -> download {names[], folder?} without running the pipeline
+  GET  /api/runs/<id>/attachment-files -> inventory of downloaded and extracted files
+  POST /api/runs/<id>/extract     -> unpack an inventoried archive {path}
+  POST /api/runs/<id>/delete      -> remove one history item, preserving active work and downloads
   GET  /api/runs/<id>/files/<name>  PUT same -> raw artifact / save edit
   POST /api/runs/<id>/graph-query {q}   POST /api/runs/<id>/open-folder
   POST /api/stop
@@ -139,6 +142,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, {"catalogs": logsleuth.list_catalogs()})
             if p == "/api/assistant":
                 return self._send(200, assistant.state())
+            m = re.fullmatch(r"/api/runs/([^/]+)/attachment-files", p)
+            if m:
+                run = pipeline.get(m.group(1))
+                return self._send(200, {"files": pipeline.attachment_files(run)}) if run else self._send(404, {"error": "run not found"})
             m = re.fullmatch(r"/api/runs/([^/]+)", p)
             if m:
                 run = pipeline.get(m.group(1))
@@ -240,9 +247,14 @@ class Handler(BaseHTTPRequestHandler):
                 if body.get("start", True):
                     pipeline.executor.start(run["id"], until=body.get("until"))
                 return self._send(200, pipeline.view(run))
-            m = re.fullmatch(r"/api/runs/([^/]+)/(start|inputs|gate|timezone|log-scan|graph-query|open-folder|attachments)", p)
+            m = re.fullmatch(r"/api/runs/([^/]+)/(start|inputs|gate|timezone|log-scan|graph-query|open-folder|attachments|extract|delete)", p)
             if m:
                 run_id, action = m.groups()
+                if action == "delete":
+                    return self._send(200, {"removed": pipeline.delete_run(run_id)})
+                if action == "extract":
+                    pipeline.executor.extract_attachment(run_id, body.get("path"))
+                    return self._send(202, {"ok": True})
                 if action == "start":
                     pipeline.executor.start(run_id, body.get("from"), bool(body.get("only")), bool(body.get("publish")),
                                             until=body.get("until"), resume=bool(body.get("resume")))

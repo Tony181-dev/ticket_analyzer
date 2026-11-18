@@ -454,7 +454,7 @@ body.preview-active .layout .node { cursor: wait; }
 .grid2 .span2 { grid-column: 1 / -1; }
 .small-check { margin: 4px 0 0; font-size: 12.5px; color: var(--ink-2); }
 .check-help { display: flex; align-items: center; gap: 7px; min-width: 0; }
-.check-help .check { flex: 1; min-width: 0; }
+.check-help .check { flex: 0 1 auto; min-width: 0; }
 .data-dir-label { margin-top: 6px; }
 .data-dir-label label { font-size: 12px; font-weight: 600; color: var(--ink-2); }
 .data-dir-hint { overflow-wrap: anywhere; }
@@ -464,8 +464,35 @@ body.preview-active .layout .node { cursor: wait; }
   background: var(--surface); color: var(--ink-2); font-size: 11px; font-weight: 700; line-height: 16px; cursor: pointer;
 }
 .help-icon:hover, .help-icon:focus-visible { border-color: var(--accent); color: var(--accent); outline: none; box-shadow: 0 0 0 3px var(--ring); }
+.inline-option-help { display: block; line-height: 1.65; }
+.inline-option-help .check { display: inline; margin: 0; }
+.inline-option-help input { vertical-align: middle; margin-right: 5px; }
+.inline-option-help .help-icon { display: inline-block; vertical-align: middle; margin-left: 3px; }
 .help-box { width: min(520px, 100%); }
 .help-text { margin: 14px 0 4px; color: var(--ink-2); line-height: 1.6; white-space: pre-wrap; }
+.help-text ul { margin: 0; padding-left: 22px; white-space: normal; }
+.help-text li + li { margin-top: 14px; }
+#helpModal { z-index: 60; }
+.m365-settings { min-width: 0; margin: 18px 0; padding: 12px 14px; border: 1px solid #cbb9eb; border-radius: 10px; }
+.m365-settings legend { padding: 0 6px; color: var(--ink-2); font-weight: 600; }
+.m365-settings > .check-help { margin-top: 12px; }
+.settings-model-pick { position: relative; display: flex; align-items: center; }
+.settings-model-pick input { padding-right: 38px !important; }
+.settings-model-pick > .model-caret { position: absolute; right: 4px; }
+.settings-model-pick .model-menu { width: 100%; max-width: 100%; }
+.run-item { position: relative; padding: 0; }
+.history-open { display: block; width: 100%; padding: 8px 36px 8px 10px; border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; font: inherit; border-radius: 8px; }
+.history-open .s, .history-open .t { display: block; }
+.history-delete { position: absolute; right: 3px; top: 5px; opacity: 0; color: var(--ink-3); }
+.run-item:hover .history-delete, .run-item:focus-within .history-delete { opacity: 1; }
+.history-delete:hover { color: var(--err); }
+.att-reason { display: block; white-space: normal; margin-top: 4px; }
+.att-error { color: var(--err); font-size: 12px; }
+.att-row.scanned-file { cursor: default; grid-template-columns: minmax(0, 1fr) auto auto; }
+.scanned-file .att-name { overflow-wrap: anywhere; }
+.scanned-file button { flex-shrink: 0; }
+#attProgressFiles { max-height: 220px; overflow-y: auto; }
+@media (hover: none) { .history-delete { opacity: 1; } }
 .att-inline { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; }
 .att-box { width: min(760px, 100%); }
 .att-head { display: flex; gap: 8px; align-items: end; flex-wrap: wrap; margin: 14px 0 8px; }

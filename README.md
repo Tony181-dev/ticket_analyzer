@@ -10,7 +10,7 @@ Gộp 3 extension cũ (Issue-Analyzer / local proxy M365, LogSleuth, CodeGraph) 
   MCP        tìm timestamp ticket  LogSleuth        tuỳ chọn         M365 | CLI         Confluence XHTML   tuỳ chọn              create / update
 ```
 
-Bước 2–3 chạy khi có log (chọn tay hoặc lấy từ attachment). Có Source code folder thì LogSleuth đối chiếu log với catalog câu lệnh trong source; nếu không có, nó vẫn tạo brief bằng từ khóa ticket và tín hiệu lỗi phổ biến. Bước 4 chạy riêng khi có source folder và bật **Dùng Code Graph**.
+Bước 2 đọc và diễn giải sơ bộ ticket ngay cả khi chưa có log (chế độ Tự nhập bỏ qua bước này). Bước 3 xử lý log chọn tay hoặc lấy từ attachment. Có Source code folder thì LogSleuth đối chiếu log với catalog câu lệnh trong source; nếu không có, nó vẫn tạo brief bằng từ khóa ticket và tín hiệu lỗi phổ biến. Bước 4 chạy riêng khi có source folder và bật **Dùng Code Graph**.
 
 ## Cài & chạy
 
@@ -50,10 +50,10 @@ Mạng công ty chặn SSL: `start.bat` và Setup tự xử lý bằng chứng c
 - **Tệp đính kèm** (trong bước Jira): chọn file cần **Tải** và file cần **Phân tích**, chọn thư mục tải
   (để trống thì dùng `Downloads\TicketAnalyzer\<ISSUE>`; có *Folder lưu trữ thông tin ticket* thì cố định là `<folder>\attachments`). File đã tải đủ dung lượng thì không tải lại.
   Tải bằng **axel** đi kèm tool (`app\axel-for-windows-master`, tối đa 8 kết nối/tệp, ít hơn với tệp nhỏ): app hỏi server dung lượng thật và đường dẫn cuối (sau redirect) trước, rồi mới gọi axel — kể cả khi có giới hạn dung lượng. Tệp < 1 MB, server không hỗ trợ Range, HTTPS (axel 2.4 không hỗ trợ) hoặc axel lỗi → tải HTTP thường; nhật ký ghi `[axel ×N]` / lý do dùng HTTP.
-  Tiến độ hiện **từng tệp một thanh** (chờ / đang tải % / đã tải / đã có sẵn / lỗi / đang giải nén / đã giải nén).
+  Nút **Tiến độ tải / giải nén tệp đính kèm** mở hai tab: **Tệp từ ticket** (mặc định, chọn tệp và bấm **Tải về → Giải nén** ngay sau bước Jira) và **File sau giải nén** (quét các file đã tải/giải nén, bấm **Giải nén tiếp** cho archive bên trong). Kết quả từng tệp vẫn hiện sau khi xong; file đã tải thành công được giữ khi dừng. Giải nén lỗi không được báo là thành công; thư mục còn dở hoặc archive đã đổi được giải nén lại khi thử tiếp.
   File nén (zip/tar/7z/rar) được giải nén; các file log bên trong được đưa vào bước Log brief.
 - **Ảnh đính kèm:** được tải và đưa vào AI phân tích riêng, không đưa vào LogSleuth. Nhiều ảnh được đọc từng ảnh rồi tổng hợp thành `05-image-evidence.md` để tuân thủ giới hạn 3 attachment/lượt của M365. Ticket chỉ có ảnh vẫn chạy đầy đủ phần phân tích/report, bỏ qua xử lý log. Giới hạn tải tự động có thể chỉnh trong Cấu hình; `0` nghĩa là không giới hạn. Tệp chưa rõ dung lượng không được tự chọn khi có giới hạn; Duyệt/Tự nhập cho phép chọn tay và hiển thị cảnh báo vượt giới hạn tự động.
-- **AI hiểu ticket** chỉ đọc Jira và trả timestamp chuẩn hóa `HH:MM:SS[.mmm]` trong JSON. Thiếu/sai timestamp: Auto match toàn catalog trên toàn khoảng log.
+- **AI hiểu ticket** chỉ đọc Jira và danh sách attachment, trình bày context, vấn đề được mô tả, nhận định ban đầu, điều chưa rõ và kế hoạch kiểm tra bằng chứng để đọc trong lúc chờ report. Chưa đọc log/ảnh/source nên chưa kết luận nguyên nhân. Khung giờ và lựa chọn attachment vẫn lưu nội bộ trong `02-focus.json`, không hiển thị JSON trong tab Hiểu ticket. Thiếu/sai timestamp: Auto match toàn catalog trên toàn khoảng log.
 - **LogSleuth Auto / Manual:** Auto tự scan source và slice theo timestamp bước trước với cấu hình mặc định. Manual dừng ở bước Log brief để thao tác **Scan → chọn catalog/service → chọn khung giờ/tuning → Slice**; xem brief rồi bấm **Proceed** để sang bước tiếp theo. Xem [hướng dẫn tích hợp](docs/logsleuth-integration.md).
 - **Token cap:** toàn bộ log brief (kể cả bảng/heading) có trần 50.000, có thể giảm ở Settings hoặc từng run. Dùng cận trên bảo thủ theo UTF-8 byte, không chỉ ước lượng `chars/4`. Ticket/graph/lịch sử AI vẫn dùng context riêng, nên giảm ngân sách nếu context tổng lớn.
 - **AI phân tích** dùng high reasoning/long context với Copilot CLI. Khi LogSleuth match được câu lệnh log trong source, app gửi thêm đoạn code quanh chính các `file:line` đó; graph chỉ là chỉ mục cấu trúc, không được coi là bằng chứng hành vi của hàm. Phân tích có mục **Suggested Solution and Code Location**: source có liên quan không, vị trí nghi ngờ (`file:line`, symbol, độ tin cậy), hướng sửa và phạm vi ảnh hưởng.
@@ -100,6 +100,7 @@ Máy người nhận vẫn cần Node.js (cho LogSleuth / Copilot CLI); Setup t�
 
 ## Cấu hình & dữ liệu
 
+- **Lịch sử:** rê chuột hoặc dùng phím Tab vào từng ticket để hiện nút thùng rác. Xác nhận **Yes / Cancel** chỉ xóa mục đã chọn; tác vụ đang chạy, thư mục dữ liệu riêng và file tải về Downloads được giữ lại.
 - `data/config/settings.json`: ngôn ngữ, model, space key, parent page, thư mục tải… (sửa qua ⚙ trong app).
 - `data/config/mcp.json`: cấu hình MCP, **chứa token**, đã nằm trong `.gitignore`.
 - `data/runs/<ISSUE>-<thời gian>/`: toàn bộ file của mỗi lần chạy (`01-jira.md` … `07-collab.json`, `run.log`).

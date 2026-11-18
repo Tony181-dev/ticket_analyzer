@@ -33,6 +33,7 @@ IMAGE_EXT = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"}
 SKIP_EXT = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".mp4", ".mov", ".avi", ".mkv", ".pdf", ".doc", ".docx",
             ".xls", ".xlsx", ".ppt", ".pptx", ".exe", ".dll", ".apk", ".so", ".bin", ".img"}
 MAX_EXTRACT_BYTES = 8 * 1024 ** 3  # zip-bomb guard: 8 GB unpacked per archive
+EXTRACT_MARKER = ".ta-extracted.json"
 _SPLIT_7Z = re.compile(r"^(?P<base>.+\.7z)\.(?P<index>\d{3,})$", re.I)
 
 
@@ -112,6 +113,8 @@ def kind_of(name):
 
 def is_log_file(path):
     p = Path(path)
+    if p.name == EXTRACT_MARKER:
+        return False
     low = p.name.lower()
     if archive_volume(low):
         return False
@@ -607,13 +610,42 @@ def _extract_7z(archive, out, cancel):
             volume_stream.close()
 
 
+def extraction_signature(archive):
+    archive = Path(archive)
+    names = {archive.name}
+    if archive_volume(archive.name):
+        names = expand_archive_volumes(names, [p.name for p in archive.parent.iterdir() if p.is_file()])
+    return [[name, (archive.parent / name).stat().st_size, (archive.parent / name).stat().st_mtime_ns]
+            for name in sorted(names)]
+
+
+def extracted_folder(archive):
+    archive = Path(archive)
+    out = archive.with_name(archive.name + "_extracted")
+    try:
+        marker = json.loads((out / EXTRACT_MARKER).read_text(encoding="utf-8"))
+        return out if marker == extraction_signature(archive) else None
+    except (OSError, ValueError):
+        return None
+
+
 def extract(archive, log=print, cancel=lambda: None, dest=None):
     """Extract once into `dest` (default '<archive>_extracted/'); returns that folder (or None)."""
     archive = Path(archive)
     out = Path(dest) if dest else archive.with_name(archive.name + "_extracted")
-    if out.is_dir() and any(out.iterdir()):
+    if out.is_symlink() or out.resolve() == archive.parent.resolve() or out.resolve() in archive.resolve().parents:
+        raise ValueError("Unsafe extraction destination")
+    signature = extraction_signature(archive)
+    try:
+        complete = json.loads((out / EXTRACT_MARKER).read_text(encoding="utf-8")) == signature
+    except (OSError, ValueError):
+        complete = False
+    if complete:
         log(f"= {archive.name} (đã giải nén / already extracted)")
         return out
+    # A nonempty directory is not proof of completion after cancellation/crash or a changed archive.
+    if out.is_dir():
+        shutil.rmtree(out)
     out.mkdir(parents=True, exist_ok=True)
     low = archive.name.lower()
     volume_stream = None
@@ -665,6 +697,8 @@ def extract(archive, log=print, cancel=lambda: None, dest=None):
             for p in out.rglob("*"):
                 if not _inside(out, p.relative_to(out)):
                     raise RuntimeError("unsafe path in archive")
+        cancel()
+        (out / EXTRACT_MARKER).write_text(json.dumps(signature), encoding="utf-8")
         log(f"⇲ {archive.name} → {out.name}")
         return out
     except BaseException as exc:
@@ -685,7 +719,7 @@ def logs_in(path):
         return [p] if is_log_file(p) else []
     return sorted(f for f in p.rglob("*")
                   if f.is_file() and f.stat().st_size > 0 and not is_volume_continuation(f.name)
-                  and (is_log_file(f) or kind_of(f.name) == "archive"))
+                  and (is_log_file(f) or (kind_of(f.name) == "archive" and not extracted_folder(f))))
 
 
 def collect(issue, items, analyze_names, folder, log=print, cancel=lambda: None, progress=lambda *a: None,
@@ -700,12 +734,16 @@ def collect(issue, items, analyze_names, folder, log=print, cancel=lambda: None,
         group = expand_archive_volumes([name], [a["filename"] for a in items])
         if not group.issubset(files) or not complete_volume_set(group):
             log(f"✗ {name}: incomplete multipart archive; extraction skipped")
+            progress("failed", k, len(todo), name)
             continue
         progress("extract", k, len(todo), name)
         if kind_of(name) == "archive":
             out = extract(path, log, cancel)
             if out:
                 logs += logs_in(out)
+            else:
+                progress("failed", k, len(todo), name)
+                continue
         elif path.suffix.lower() == ".gz" and not path.name.lower().endswith(".tar.gz"):
             logs.append(path)  # LogSleuth reads .gz directly
         else:

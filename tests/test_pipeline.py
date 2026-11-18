@@ -541,10 +541,10 @@ class PipelineTest(unittest.TestCase):
         run = pipeline.get(run["id"])
         self.assertEqual(len(run["usage_passes"]), 1)
         first = run["usage_passes"][0]
-        self.assertEqual((first["n"], first["from"], first["model_calls"]), (1, "jira", 2))
+        self.assertEqual((first["n"], first["from"], first["model_calls"]), (1, "jira", 3))
         self.assertTrue(first["estimated"], "no usage events from the backend: the tokens are an estimate")
         self.assertGreater(first["total_tokens"], 0)
-        self.assertEqual(set(first["by_step"]), {"analyze", "format"})
+        self.assertEqual(set(first["by_step"]), {"understand", "analyze", "format"})
         self.assertIsNotNone(first["ended"])
 
         pipeline.executor.start(run["id"], "analyze")  # running again adds a pass instead of overwriting
@@ -555,7 +555,7 @@ class PipelineTest(unittest.TestCase):
         total = run["usage_total"]
         self.assertEqual(total["passes"], 2)
         self.assertEqual(total["total_tokens"], sum(record["total_tokens"] for record in run["usage_passes"]))
-        self.assertEqual(total["model_calls"], 4)
+        self.assertEqual(total["model_calls"], 5)
 
         pipeline.executor.start(run["id"], "collab", only=True, publish=True)  # no AI call: not a token pass
         self.wait()
@@ -739,12 +739,13 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(run["steps"]["log"]["status"], "done", run["steps"]["log"]["error"])
         self.assertIn("status=133", (pipeline.run_dir(run["id"]) / "03-log-brief.md").read_text(encoding="utf-8"))
 
-    def test_jira_only_skips_optional_steps(self):
+    def test_jira_only_reads_ticket_context_and_skips_log_and_graph(self):
         run = pipeline.create("XYZ-7")
         pipeline.executor.start(run["id"])
         self.wait()
         steps = pipeline.get(run["id"])["steps"]
-        self.assertEqual([steps[s]["status"] for s in ("understand", "log", "graph")], ["skipped"] * 3)
+        self.assertEqual(steps["understand"]["status"], "done")
+        self.assertEqual([steps[s]["status"] for s in ("log", "graph")], ["skipped"] * 2)
         self.assertEqual(steps["format"]["status"], "done", steps["format"]["error"])
 
     def test_manual_pauses_then_scans_selects_and_slices(self):
