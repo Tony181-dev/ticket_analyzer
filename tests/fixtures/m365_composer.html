@@ -54,6 +54,29 @@
     }
     document.querySelector('[data-testid="PlusMenuButton"]').onclick = () => window.clicks.push('PLUS');
     document.querySelector('.fai-SendButton').onclick = () => window.clicks.push('SEND');
+    // Optional submission simulation: uploads may finish before Send becomes enabled, Enter can
+    // remain a newline shortcut, and a successful send can remount the editor with an empty node.
+    window.sentPrompts = [];
+    window.enableSending = ({readyAfter = 0, acknowledge = true, remount = false, type = 'button'} = {}) => {
+      const button = document.querySelector('.fai-SendButton');
+      button.type = type;
+      button.disabled = readyAfter > 0;
+      if (readyAfter > 0) setTimeout(() => { button.disabled = false; }, readyAfter);
+      button.onclick = () => {
+        window.clicks.push('SEND');
+        const editor = document.getElementById('m365-chat-editor-target-element');
+        const text = editor.innerText.trim();
+        if (!text || !acknowledge) return;
+        window.sentPrompts.push(text);
+        const target = remount ? editor.cloneNode(false) : editor;
+        target.innerHTML = '<p><br></p>';
+        if (remount) editor.replaceWith(target);
+        document.querySelector('.fai-BebopLiteChatInput__attachments').replaceChildren();
+      };
+      document.getElementById('m365-chat-editor-target-element').addEventListener('keydown', event => {
+        if (event.key === 'Enter') { event.preventDefault(); window.clicks.push('NEWLINE'); }
+      });
+    };
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
     // uploads: a chip (name without extension, full name as tooltip) with a spinner that stops after a moment
     window.rejectUploads = false;

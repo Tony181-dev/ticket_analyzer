@@ -23,6 +23,10 @@ def _fold(text):
     return unicodedata.normalize("NFC", text).casefold()
 def _norm(text):
     return re.sub(r"[^a-z0-9\uac00-\ud7a3]+", "", _fold(text))
+
+def _same_prompt(text, prompt):
+    probe = _norm(prompt)
+    return bool(text.strip()) and (_norm(text) == probe if probe else text.strip() == prompt.strip())
 # The picker is localized: the same model shows as "GPT-5.6 Sol Think Deeper" (English UI) or
 # "GPT-5.6 Sol Tư duy sâu" (Vietnamese UI). Compare labels in one canonical (English) form.
 _MODEL_WORDS = (("tuduysau", "thinkdeeper"), ("tuduy", "think"), ("phanhoinhanh", "quickresponse"),
@@ -63,7 +67,19 @@ _UPLOAD_STATE_JS = r"""(name) => {
   const list = scope.querySelector('[class*="attachments" i]');
   const items = list ? [...list.children].filter(shown).length : 0;
   const busy = [...scope.querySelectorAll('[role="progressbar"], [aria-busy="true"], [class*="spinner" i]')].some(shown);
-  return { scoped: !!area, chips, items, busy };
+  const errors = [...scope.querySelectorAll('[role="alert"]')].filter(shown).map(el => el.textContent.trim()).filter(Boolean);
+  return { scoped: !!area, chips, items, busy, errors };
+}"""
+_DRAFT_STATE_JS = r"""el => {
+  if (!el.isConnected) return null;
+  const shown = node => !!(node.offsetWidth || node.offsetHeight || node.getClientRects().length);
+  const scope = el.closest('[class*="inputWrapper" i]') || el.closest('[class*="ChatInput" i]') || el.parentElement;
+  const list = scope && scope.querySelector('[class*="attachments" i]');
+  return {
+    text: el.tagName === 'TEXTAREA' ? el.value : el.innerText,
+    attachments: list ? [...list.children].filter(shown).length : 0,
+    uploading: !!scope && [...scope.querySelectorAll('[role="progressbar"], [aria-busy="true"], [class*="spinner" i]')].some(shown)
+  };
 }"""
 def launch_args():
     # Must stay identical to setup.py's launch_args() so the profile behaves the same way
@@ -504,7 +520,7 @@ class Browser:
                 return state
             best = best or state
         return best or {"chips": 0, "items": 0, "busy": False}
-    def upload(self, page, file_path, timeout=60):
+    def upload(self, page, file_path, timeout=None):
         """Attach one file and wait until M365 shows it as uploaded.
 
         Done = one more chip naming the file (full name, name without extension, or its tooltip) or one more
@@ -516,18 +532,27 @@ class Browser:
         if not file_input:
             raise RuntimeError("Attachment control not found")
         name = Path(file_path).name
+        size = Path(file_path).stat().st_size
+        if timeout is None:
+            timeout = min(120, 60 + (size // (256 * 1024)) * 5)
         before = self._upload_state(page, name)
         file_input.set_input_files(file_path)
         deadline = time.time() + timeout
         state = before
+        ready = 0
         while time.time() < deadline:
             page.wait_for_timeout(400)
             state = self._upload_state(page, name)
+            failures = [text for text in state.get("errors", []) if re.search(
+                r"failed|error|unsupported|too large|unable|couldn.t|can.t upload|không thể|quá lớn|không hỗ trợ|실패|너무 큽", text, re.I)]
+            if failures:
+                raise RuntimeError(f"Attachment rejected: {name} ({size:,} B): {failures[0][:300]}")
             added = state["chips"] > before["chips"] or state["items"] > before["items"]
-            if added and not state["busy"]:
+            ready = ready + 1 if added and not state["busy"] else 0
+            if ready >= 2:
                 return
         reason = "still uploading" if state["chips"] > before["chips"] or state["items"] > before["items"] else "no file chip appeared"
-        raise RuntimeError(f"Attachment upload did not complete: {name} ({reason} after {timeout}s)")
+        raise RuntimeError(f"Attachment upload did not complete: {name} ({size:,} B; {reason} after {timeout}s)")
     def _cards(self, page):
         output, seen = [], set()
         selectors = (
@@ -553,10 +578,17 @@ class Browser:
                     pass
         return output
     def busy(self, page):
+        if self.generating(page):
+            return True
+        # Upload/history widgets can stay aria-busy after sending. Only assistant response
+        # containers count here, otherwise a completed answer can wait forever for unrelated UI.
         selector = (
-            "button[aria-label*='Stop generating' i],"
-            "button[aria-label*='Stop responding' i],"
-            "[aria-busy='true']"
+            "[data-message-author-role='assistant'][aria-busy='true'],"
+            "[data-message-author-role='assistant'] [aria-busy='true'],"
+            "[data-author='assistant'][aria-busy='true'],"
+            "[data-author='assistant'] [aria-busy='true'],"
+            "[data-testid*='assistant-response' i][aria-busy='true'],"
+            "[data-testid*='assistant-response' i] [aria-busy='true']"
         )
         for root in self.roots(page):
             try:
@@ -578,15 +610,16 @@ class Browser:
             return box.inner_text() or ""
         except Exception:
             return ""
-    def type_prompt(self, page, box, prompt):
+    def type_prompt(self, page, box, prompt, methods=("fill", "insert", "keys")):
         """Put `prompt` into the composer and confirm it is really there before sending.
 
         The rich-text composer sometimes ignores fill() (notably right after an attachment upload), which left
         only the files in the box - M365 then refuses to send and the old "composer is empty = sent" check
         mistook that for success. Tries fill, then insert_text, then real key presses."""
-        probe = _norm(prompt)[:24]
-        for attempt in ("fill", "insert", "keys"):
+        for attempt in methods:
             try:
+                # Uploading can replace the Lexical editor; never keep typing into the old node.
+                box = self.composer(page) or box
                 box.click()
                 if attempt == "fill":
                     box.fill(prompt)
@@ -600,34 +633,169 @@ class Browser:
             except Exception:
                 continue
             page.wait_for_timeout(250)
-            typed = _norm(self.composer_text(box))
-            if typed and (not probe or probe in typed):
+            if _same_prompt(self.composer_text(box), prompt):
                 return True
         return False
 
-    def click_send(self, page):
+    def ensure_prompt(self, page, prompt):
+        box = self.wait_composer(page)
+        if box is not None and (_same_prompt(self.composer_text(box), prompt) or self.type_prompt(page, box, prompt)):
+            return
+        raise RuntimeError("PROMPT_NOT_ENTERED: the full prompt could not be typed into the M365 composer")
+
+    def send_button(self, page):
+        """Find Send in the current composer, including tenants using type=button."""
         selectors = (
-            "button.fai-SendButton[type='submit']",
-            "button[type='submit'][aria-label='G\u1eedi']",  # Vietnamese UI: "Gửi"
-            "button[type='submit'][aria-label='Send']",
-            "button[type='submit'][aria-label*='Send' i]",
-            "button[aria-label='Send']",
-            "button[type='submit']",
+            "button.fai-SendButton",
+            "button[aria-label='G\u1eedi']",
+            "button[aria-label='Send']", "button[aria-label*='Send message' i]",
+            "button[aria-label='보내기']",
+        )
+        scopes = []
+        box = self.composer(page)
+        if box is not None:
+            try:
+                scope = box.locator("xpath=ancestor::*[contains(@class, 'inputWrapper') or contains(@class, 'ChatInput') or self::form][1]")
+                if scope.count():
+                    scopes.append(scope)
+            except Exception:
+                pass
+        scoped = bool(scopes)
+        if not scopes:
+            scopes = self.roots(page)
+        for root in scopes:
+            # An unlabelled submit button is safe only inside the composer, never elsewhere on the page.
+            choices = selectors + (("button[type='submit']",) if scoped else ())
+            for selector in choices:
+                try:
+                    matches = root.locator(selector)
+                    for index in range(matches.count() - 1, -1, -1):
+                        button = matches.nth(index)
+                        if button.is_visible():
+                            return button
+                except Exception:
+                    continue
+        return None
+
+    def click_send(self, page):
+        button = self.send_button(page)
+        if button is not None:
+            try:
+                if button.is_enabled():
+                    button.click(timeout=2000)
+                    return True
+            except Exception:
+                pass
+        return False
+
+    def draft_state(self, page):
+        box = self.composer(page)
+        if box is not None:
+            try:
+                return box.evaluate(_DRAFT_STATE_JS)
+            except Exception:
+                pass
+        # A detached/missing editor is unknown, not an empty (successfully sent) draft.
+        return None
+
+    def generating(self, page):
+        selectors = (
+            "button[aria-label*='Stop generating' i]", "button[aria-label*='Stop responding' i]",
+            "button[aria-label*='Dừng tạo' i]", "button[aria-label*='Dừng phản hồi' i]",
+            "button[aria-label*='응답 중지']",
         )
         for root in self.roots(page):
             for selector in selectors:
                 try:
-                    match = root.locator(selector)
-                    if not match.count():
-                        continue
-                    button = match.first
-                    if not button.is_visible() or button.is_disabled():
-                        continue
-                    button.click(timeout=2000)
-                    return True
+                    matches = root.locator(selector)
+                    if any(matches.nth(index).is_visible() for index in range(matches.count())):
+                        return True
                 except Exception:
                     continue
         return False
+
+    def send_prompt(self, page, prompt, before, timeout=60):
+        """Wait for upload/Send readiness, then require acknowledgement before waiting for an answer."""
+        self.ensure_prompt(page, prompt)
+        deadline = time.monotonic() + timeout
+        attempted = False
+        blank_since = None
+        last_action = 0
+        refreshed = False
+        keyboard_attempts = 0
+        while time.monotonic() < deadline:
+            state = self.draft_state(page)
+            # Also accept a manual Send while automation was waiting for file processing.
+            if self.generating(page) or len(self._cards(page)) > len(before):
+                return
+            if attempted:
+                if state and not state["text"].strip() and not state["attachments"] and not state["uploading"]:
+                    blank_since = blank_since or time.monotonic()
+                    if time.monotonic() - blank_since >= 1:
+                        return
+                else:
+                    blank_since = None
+            matches_prompt = state and _same_prompt(state["text"], prompt)
+            if state and not attempted and not state["text"].strip() and not state["uploading"] and not refreshed:
+                current = self.composer(page)
+                if current is not None:
+                    self.type_prompt(page, current, prompt, methods=("insert", "keys"))
+                    refreshed = True
+            if matches_prompt and not state["uploading"]:
+                now = time.monotonic()
+                if not attempted:
+                    button = self.send_button(page)
+                    try:
+                        enabled = button is not None and button.is_enabled(timeout=1000)
+                    except Exception:
+                        page.wait_for_timeout(250)
+                        continue  # M365 replaced the editor/button while checking readiness.
+                    if enabled:
+                        # A click can reach M365 even when Playwright subsequently reports a timeout.
+                        # Observe the draft before any retry rather than treating that as "not sent".
+                        attempted, last_action = True, now
+                        try:
+                            button.click(timeout=2000)
+                        except Exception:
+                            pass
+                    elif button is None:
+                        # Some tenants expose only the editor shortcut. A disabled Send must be awaited.
+                        current = self.composer(page)
+                        if current is not None:
+                            attempted, last_action = True, now
+                            try:
+                                current.press("Enter", timeout=2000)
+                            except Exception:
+                                pass
+                    elif not refreshed and deadline - now < timeout - 5:
+                        # Lexical can show text while its application state is still empty after upload.
+                        # Re-enter through keyboard input once, keeping the attachments in place.
+                        current = self.composer(page)
+                        if current is not None:
+                            self.type_prompt(page, current, prompt, methods=("insert", "keys"))
+                            refreshed = True
+                elif now - last_action >= 8 and keyboard_attempts < 2:
+                    # Retry only while the same full draft is still present, never after it disappeared.
+                    button = self.send_button(page)
+                    if button is not None:
+                        try:
+                            if button.is_disabled(timeout=1000):
+                                page.wait_for_timeout(250)
+                                continue
+                        except Exception:
+                            continue
+                    current = self.composer(page)
+                    if current is not None:
+                        try:
+                            current.press("Enter" if keyboard_attempts == 0 else "Control+Enter", timeout=2000)
+                            last_action = now
+                            keyboard_attempts += 1
+                        except Exception:
+                            pass
+            page.wait_for_timeout(250)
+        state = self.draft_state(page)
+        detail = "files still processing" if state and state["uploading"] else "Send unavailable or submission not acknowledged"
+        raise RuntimeError(f"PROMPT_NOT_SENT: {detail} after {timeout}s; check the M365 chat draft")
     def open_chat_page(self, url, headless):
         page = self.open(headless)
         try:
@@ -737,43 +905,16 @@ class Browser:
                     raise RuntimeError("LOGIN_REQUIRED")
                 raise RuntimeError("Composer not found")
             chosen = self.select_model(page, model)
+            prompt = (prompt or "").strip() or DEFAULT_PROMPT
+            # Keep a visible, valid message while file upload/indexing is pending. Previously all
+            # uploads had to complete before typing, leaving an empty, unsendable draft on failure.
+            self.ensure_prompt(page, prompt)
             for file_path in files or []:
                 self.upload(page, file_path)
+                self.ensure_prompt(page, prompt)
             before = self._cards(page)
             before_images = self.image_srcs(page) if image_dir else []
-            box = self.wait_composer(page)
-            if not self.type_prompt(page, box, (prompt or "").strip() or DEFAULT_PROMPT):
-                raise RuntimeError("PROMPT_NOT_ENTERED: the prompt could not be typed into the M365 composer, "
-                                   "so the attachments alone cannot be sent")
-            box.press("Enter")
-            # Enter alone is not always registered by this composer (multi-line editors,
-            # an attachment upload still settling, etc.), so verify the message actually
-            # left the composer before assuming it was sent - the prompt was confirmed in the
-            # box above, so an empty composer now really means "sent". Only fall back to a
-            # second Enter and then the real Send button if that quick check fails.
-            sent = False
-            check_deadline = time.time() + 4
-            while time.time() < check_deadline:
-                if self.busy(page) or len(self._cards(page)) > len(before):
-                    sent = True
-                    break
-                if not self.composer_text(box).strip():
-                    sent = True
-                    break
-                page.wait_for_timeout(300)
-            if not sent:
-                try:
-                    box.press("Enter")
-                except Exception:
-                    pass
-                page.wait_for_timeout(600)
-                sent = (
-                    self.busy(page)
-                    or len(self._cards(page)) > len(before)
-                    or not self.composer_text(box).strip()
-                )
-            if not sent:
-                self.click_send(page)
+            self.send_prompt(page, prompt, before)
             deadline = time.time() + 240
             last = ""
             stable = 0

@@ -15,7 +15,8 @@ def validate(items):
   if not p.is_file():raise FileNotFoundError(str(p))
   if is_sensitive(p):raise ValueError('Refusing sensitive file: '+p.name)
   size=p.stat().st_size;total+=size
-  if size>10485760 or total>26214400:raise ValueError('Attachment size limit exceeded')
+  if size>10485760:raise ValueError(f'Attachment too large: {p.name} ({size:,} B); per-file upload limit is 10 MiB')
+  if total>26214400:raise ValueError(f'Attachment total size limit exceeded at {p.name}: {total:,} B; total upload limit is 25 MiB')
   if not is_binary(p) and b'\0' in p.read_bytes()[:8192]:raise ValueError('Unclassified binary content: '+p.name)
   result.append(str(p))
  return result

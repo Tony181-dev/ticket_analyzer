@@ -103,6 +103,11 @@ class PackTest(unittest.TestCase):
             worker_attachments.validate([{"path": str(f)} for f in files])
         self.assertEqual(len(worker_attachments.validate([{"path": str(f)} for f in files[:3]])), 3)
 
+    def test_oversized_markdown_error_identifies_the_file_and_actual_size(self):
+        file = self.make('large-log-brief.md', data=b'x' * (10485760 + 1))
+        with self.assertRaisesRegex(ValueError, r'large-log-brief.md.*10,485,761 B.*10 MiB'):
+            worker_attachments.validate([{'path': str(file)}])
+
 
 if __name__ == "__main__":
     unittest.main()

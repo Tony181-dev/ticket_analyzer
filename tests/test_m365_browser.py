@@ -1,5 +1,6 @@
 """M365 composer: the prompt must really be in the box before Enter (attachments alone are never sent)."""
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -77,6 +78,14 @@ class ComposerTest(unittest.TestCase):
     def test_default_prompt_is_not_empty(self):
         self.assertTrue(browser.DEFAULT_PROMPT.strip())
 
+    def test_a_truncated_prompt_is_not_accepted(self):
+        class TruncatedBox(FakeBox):
+            def fill(self, text):
+                self.text = text[:30]
+
+        self.assertTrue(self.type(TruncatedBox())[0], "a partial fill must be replaced by complete keyboard input")
+        self.assertFalse(self.type(TruncatedBox(accept_insert=False, accept_keys=False))[0])
+
 
 FIXTURE = ROOT / "tests" / "fixtures" / "m365_composer.html"
 
@@ -139,6 +148,142 @@ class LivePageTest(unittest.TestCase):
         self.assertIn("Thực hiện phân tích", self.worker.composer_text(box))
         self.assertTrue(self.worker.click_send(self.page))
         self.assertEqual(self.clicks(), ["SEND"])
+
+    def test_markdown_upload_waits_for_send_to_enable_and_clicks_instead_of_newline(self):
+        with tempfile.TemporaryDirectory() as folder:
+            file = Path(folder) / '01-jira.md'
+            file.write_text('# Jira evidence\nBluetooth fails after pairing.', encoding='utf-8')
+            self.worker.upload(self.page, str(file), timeout=5)
+        self.page.evaluate('enableSending({readyAfter: 1200, remount: true})')
+        self.worker.send_prompt(self.page, 'Analyze Jira ABC-1 using the attached Markdown.', [], timeout=5)
+        self.assertEqual(self.page.evaluate('window.sentPrompts'), ['Analyze Jira ABC-1 using the attached Markdown.'])
+        self.assertEqual(self.clicks(), ['SEND'], 'Enter is a newline in this tenant; use the enabled Send button')
+        self.assertEqual(self.worker.draft_state(self.page)['attachments'], 0)
+
+    def test_prompt_is_present_before_upload_and_remains_when_upload_fails(self):
+        from unittest import mock
+
+        prompt = 'Analyze Jira ABC-1 using the attached Markdown.'
+
+        def blocked_upload(page, file):
+            self.assertEqual(self.worker.composer_text(self.worker.composer(page)), prompt)
+            raise RuntimeError('Attachment upload did not complete: large.md (2,000,000 B)')
+
+        with mock.patch.object(self.worker, 'open_chat_page', return_value=self.page), \
+                mock.patch.object(self.worker, 'select_model', return_value='Test model'), \
+                mock.patch.object(self.worker, 'upload', side_effect=blocked_upload):
+            with self.assertRaisesRegex(RuntimeError, 'large.md'):
+                self.worker.chat(prompt, files=['large.md'])
+        self.assertEqual(self.worker.composer_text(self.worker.composer(self.page)), prompt)
+        self.assertEqual(self.clicks(), [])
+
+    def test_upload_rejection_reports_filename_and_size_without_waiting_for_send(self):
+        self.page.evaluate("""() => {
+          window.rejectUploads = true;
+          const alert = document.createElement('div');
+          alert.role = 'alert'; alert.textContent = 'File too large to upload';
+          document.querySelector('.fai-BebopLiteChatInput__inputWrapper').appendChild(alert);
+        }""")
+        with tempfile.TemporaryDirectory() as folder:
+            file = Path(folder) / 'large.md'
+            file.write_text('large', encoding='utf-8')
+            with self.assertRaisesRegex(RuntimeError, r'Attachment rejected: large.md \(5 B\)'):
+                self.worker.upload(self.page, str(file), timeout=3)
+        self.assertEqual(self.clicks(), [])
+
+    def test_unrelated_busy_indicator_does_not_mean_the_prompt_was_sent(self):
+        self.page.evaluate('enableSending({acknowledge: false})')
+        self.assertFalse(self.worker.busy(self.page), 'a busy history widget is not assistant generation')
+        with self.assertRaisesRegex(RuntimeError, 'PROMPT_NOT_SENT'):
+            self.worker.send_prompt(self.page, 'Analyze the attached file.', [], timeout=1)
+        self.assertEqual(self.page.evaluate('window.sentPrompts'), [])
+
+    def test_a_missing_editor_after_click_is_not_a_successful_send(self):
+        self.page.evaluate("() => { document.querySelector('.fai-SendButton').onclick = () => document.getElementById('m365-chat-editor-target-element').remove(); }")
+        with self.assertRaisesRegex(RuntimeError, 'PROMPT_NOT_SENT'):
+            self.worker.send_prompt(self.page, 'Analyze the attached file.', [], timeout=1)
+
+    def test_disabled_send_is_never_pressed_as_a_keyboard_fallback(self):
+        self.page.evaluate('enableSending({readyAfter: 60000})')
+        with self.assertRaisesRegex(RuntimeError, 'PROMPT_NOT_SENT'):
+            self.worker.send_prompt(self.page, 'Analyze the attached file.', [], timeout=1)
+        self.assertEqual(self.clicks(), [])
+
+    def test_actual_assistant_streaming_is_busy(self):
+        self.page.evaluate("""() => {
+          const response = document.createElement('div');
+          response.dataset.messageAuthorRole = 'assistant';
+          response.setAttribute('aria-busy', 'true');
+          response.textContent = 'Thinking';
+          document.body.appendChild(response);
+        }""")
+        self.assertTrue(self.worker.busy(self.page))
+
+    def test_upload_still_processing_blocks_submission(self):
+        self.page.evaluate("""() => {
+          enableSending();
+          document.querySelector('.fai-BebopLiteChatInput__attachments').innerHTML = '<div role="progressbar">Processing file</div>';
+        }""")
+        with self.assertRaisesRegex(RuntimeError, 'PROMPT_NOT_SENT: files still processing'):
+            self.worker.send_prompt(self.page, 'Analyze the attached file.', [], timeout=1)
+        self.assertEqual(self.clicks(), [])
+
+    def test_editor_remounted_during_typing_is_reacquired(self):
+        self.page.evaluate("""() => {
+          enableSending();
+          const editor = document.getElementById('m365-chat-editor-target-element');
+          editor.addEventListener('input', () => {
+            const replacement = editor.cloneNode(false);
+            replacement.innerHTML = '<p><br></p>';
+            editor.replaceWith(replacement);
+          }, {once: true});
+        }""")
+        self.worker.send_prompt(self.page, 'Analyze the attached file.', [], timeout=5)
+        self.assertEqual(self.page.evaluate('window.sentPrompts'), ['Analyze the attached file.'])
+
+    def test_visible_text_with_empty_application_state_is_reentered_via_keyboard(self):
+        self.page.evaluate("""() => {
+          enableSending({readyAfter: 60000});
+          let inputs = 0;
+          document.getElementById('m365-chat-editor-target-element').addEventListener('input', () => {
+            if (++inputs > 1) document.querySelector('.fai-SendButton').disabled = false;
+          });
+        }""")
+        self.worker.send_prompt(self.page, 'Analyze the attached file.', [], timeout=8)
+        self.assertEqual(self.page.evaluate('window.sentPrompts'), ['Analyze the attached file.'])
+
+    def test_unrelated_submit_buttons_are_not_used(self):
+        self.page.evaluate("""() => {
+          const other = document.createElement('button');
+          other.type = 'submit'; other.textContent = 'Save settings';
+          other.onclick = () => window.clicks.push('WRONG_FORM');
+          document.body.prepend(other);
+          document.querySelector('.fai-SendButton').removeAttribute('class');
+          document.querySelector('[aria-label="Gửi"]').removeAttribute('aria-label');
+          document.querySelector('.fai-BebopLiteChatInput__inputWrapper button[type=submit]').onclick = () => window.clicks.push('RIGHT_FORM');
+        }""")
+        self.assertTrue(self.worker.click_send(self.page))
+        self.assertEqual(self.clicks(), ['RIGHT_FORM'])
+
+    def test_chat_waits_for_submission_before_collecting_the_answer(self):
+        from unittest import mock
+
+        self.page.evaluate("""() => {
+          enableSending({readyAfter: 700});
+          document.querySelector('.fai-SendButton').addEventListener('click', () => {
+            if (!window.sentPrompts.length) return;
+            const answer = document.createElement('div');
+            answer.dataset.messageAuthorRole = 'assistant';
+            answer.textContent = 'Analysis completed from Markdown evidence.';
+            document.body.appendChild(answer);
+          });
+        }""")
+        with mock.patch.object(self.worker, 'open_chat_page', return_value=self.page), \
+                mock.patch.object(self.worker, 'select_model', return_value='Test model'), \
+                mock.patch.object(self.worker, 'conversation_url', return_value='https://example.test/chat'):
+            answer, _, _ = self.worker.chat('Analyze the attached Markdown.')
+        self.assertEqual(answer, 'Analysis completed from Markdown evidence.')
+        self.assertEqual(self.page.evaluate('window.sentPrompts'), ['Analyze the attached Markdown.'])
 
 
 if __name__ == "__main__":
