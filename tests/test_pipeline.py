@@ -492,7 +492,7 @@ class PipelineTest(unittest.TestCase):
         self.assertNotIn("06-infographic", self.world.page_bodies[run["collab"]["title"]],
                          "a page must never reference an image that was not uploaded")
 
-    def test_m365_image_failure_falls_back_to_the_local_svg(self):
+    def test_m365_image_failure_is_reported_without_a_local_svg_substitute(self):
         settings.save({"ai_mode": "m365", "review_before_publish": True})
 
         def no_image(cfg, prompt, files, image_dir, session_id=None):
@@ -507,9 +507,9 @@ class PipelineTest(unittest.TestCase):
             pipeline.ai.ask_image = original
             settings.save({"ai_mode": "copilot"})
         run = pipeline.get(run["id"])
-        self.assertEqual(run["steps"]["infographic"]["status"], "done", run["steps"]["infographic"]["error"])
-        self.assertIn("SVG", run["steps"]["infographic"]["note"])
-        self.assertTrue((pipeline.run_dir(run["id"]) / "06-infographic.svg").exists())
+        self.assertEqual(run["steps"]["infographic"]["status"], "error")
+        self.assertIn('image generation limit reached', run['steps']['infographic']['error'])
+        self.assertFalse((pipeline.run_dir(run["id"]) / "06-infographic.svg").exists())
         self.assertIn("image generation limit reached", (pipeline.run_dir(run["id"]) / "run.log").read_text(encoding="utf-8"))
 
     def test_resume_and_until_run_exactly_the_requested_range(self):

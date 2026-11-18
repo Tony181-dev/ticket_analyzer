@@ -96,6 +96,9 @@ function connect() {
     } else if (m.type === 'run_deleted') {
       if (S.run && S.run.id === m.run_id) $('#newRun').click();
       scheduleHistory();
+    } else if (m.type === 'run_reset') {
+      if (S.run?.id === m.run_id) clearWorkflowView();
+      scheduleHistory();
     } else if (m.type.startsWith('assistant')) {
       if (window.Assistant) Assistant.onEvent(m);
     } else if (m.type === 'settings') {
@@ -130,7 +133,20 @@ function renderMode() {
   for (const b of document.querySelectorAll('.lang-btn')) b.setAttribute('aria-checked', String(b.dataset.lang === I18N.lang));
   if (document.activeElement !== $('#modelInput')) $('#modelInput').value = currentModel();
   renderModelMenu();
+  renderHeadlessOption();
 }
+
+function renderHeadlessOption() {
+  $('#m365HeadlessOption').hidden = S.state.settings.ai_mode !== 'm365';
+  $('#m365Headless').checked = !!S.state.settings.m365_headless;
+  $('#m365Headless').disabled = !!S.state.busy;
+}
+$('#m365Headless').onchange = guard(async () => {
+  $('#m365Headless').disabled = true;
+  try {
+    S.state.settings = await api('/api/settings', { body: { m365_headless: $('#m365Headless').checked } });
+  } finally { renderHeadlessOption(); }
+});
 const currentModel = () => {
   const s = S.state.settings;
   return s.ai_mode === 'copilot' ? (s.copilot_model || 'auto') : s.m365_model;
@@ -434,7 +450,9 @@ function resumable() {
 }
 
 function renderButtons() {
+  renderHeadlessOption();
   const busy = S.state.busy;
+  $('#resetWorkflow').disabled = busy || !S.run || !!S.preview;
   $('#runAll').hidden = busy;
   $('#stopBtn').hidden = !busy;
   $('#resumeBtn').hidden = busy || !resumable();
@@ -681,6 +699,7 @@ function renderFlow() {
 }
 
 function renderHead() {
+  $('#resetWorkflowControl').hidden = !S.run;
   if (!S.run) {
     $('#runTitle').textContent = t('run.newTitle');
     $('#runSub').textContent = t('run.newSub');
@@ -696,6 +715,35 @@ function renderHead() {
   $('#openFolder').hidden = false;
 }
 $('#openFolder').onclick = guard(() => api(`/api/runs/${encodeURIComponent(S.run.id)}/open-folder`, { body: {} }));
+
+function clearWorkflowView() {
+  $('#console').textContent = '';
+  $('#consoleCount').textContent = '';
+  S.gatePrompted = null;
+  closeDrawer();
+  renderAll();
+}
+$('#resetWorkflow').onclick = () => {
+  if (!S.run || S.state.busy) return;
+  S.resetRunId = S.run.id;
+  $('#resetWorkflowIssue').textContent = S.run.issue;
+  openModal('#resetWorkflowModal');
+  $('#resetWorkflowModal [data-close]').focus();
+};
+$('#confirmResetWorkflow').onclick = guard(async () => {
+  const id = S.resetRunId;
+  if (!id || S.state.busy) return;
+  const button = $('#confirmResetWorkflow');
+  button.disabled = true;
+  try {
+    const run = await api(`/api/runs/${encodeURIComponent(id)}/reset`, { body: {} });
+    $('#resetWorkflowModal').hidden = true;
+    if (S.run?.id === id) { S.run = run; clearWorkflowView(); }
+    S.state = await api('/api/state');
+    renderHistory();
+    toast(t('run.resetDone'));
+  } finally { button.disabled = false; }
+});
 
 function renderAll() {
   renderInputs();
@@ -1743,6 +1791,7 @@ $('#settingsForm').onsubmit = guard(async (e) => {
   if (!S.run) S.draft.auto_publish_to_collab = !S.state.settings.review_before_publish;
   closeModals();
   renderInputs();
+  renderMode();
   toast(t('toast.settings'));
 });
 

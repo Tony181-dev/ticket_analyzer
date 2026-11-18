@@ -174,6 +174,61 @@ class TicketWorkflowTest(unittest.TestCase):
                     pipeline._ask_ai(run, settings.load(), 'prompt', [], self.root, retries=2)
                 self.assertEqual(ask.call_count, 1)
 
+    def test_reset_clears_outputs_tokens_time_and_session_but_preserves_attachments(self):
+        run = pipeline.create('RESET-1', data_dir=str(self.root / 'ticket'))
+        folder = pipeline.attachment_folder(run)
+        folder.mkdir(parents=True)
+        archive = folder / 'logs.zip'
+        archive.write_bytes(b'keep archive')
+        log = folder / 'logs.zip_extracted' / 'main.log'
+        log.parent.mkdir(); log.write_text('keep log', encoding='utf-8')
+        run['attachments'] = [{'filename': 'logs.zip', 'path': str(archive), 'analyzed': True}]
+        run['inputs']['log_files'] = [str(log)]
+        run.update(summary='Old summary', collab={'page_id': '123'}, focus={'time_start': '12:30'},
+                   pending_gate={'problem': 'old'}, report_lang='vi',
+                   usage_passes=[{'n': 1, 'input_tokens': 100, 'output_tokens': 50, 'model_calls': 1}],
+                   copilot_usage={'input_tokens': 100, 'output_tokens': 50, 'model_calls': 1})
+        for state in run['steps'].values():
+            state.update(status='done', started=1, ended=61, elapsed_seconds=60)
+        for name in ('01-jira.md', '02-focus.json', '05-analysis.md', '06-infographic.svg', 'run.log', '01-attachments.md'):
+            pipeline._write(run, name, 'old output')
+        note = pipeline._write(run, 'my-notes.md', 'keep my note')
+        scratch = pipeline.run_dir(run['id']) / 'logs-prepared'
+        scratch.mkdir(); (scratch / 'prepared.log').write_text('scratch', encoding='utf-8')
+        old_session = run['session_id']
+        pipeline._save(run)
+        self.assertGreater(run['usage_total']['total_tokens'], 0)
+        result = pipeline.reset_workflow(run['id'])
+        self.assertEqual(result['usage_total']['total_tokens'], 0)
+        self.assertEqual(result['usage_passes'], [])
+        self.assertEqual(result['copilot_usage']['input_tokens'], 0)
+        self.assertTrue(all(state['status'] == 'idle' and state['elapsed_seconds'] == 0 for state in result['steps'].values()))
+        self.assertNotEqual(result['session_id'], old_session)
+        self.assertEqual(result['collab'], {})
+        self.assertNotIn('pending_gate', result)
+        self.assertTrue(archive.exists() and log.exists() and note.exists())
+        self.assertEqual(result['inputs']['log_files'], [str(log)])
+        self.assertTrue(pipeline._path(run, '01-attachments.md').exists())
+        self.assertFalse(pipeline._path(run, '05-analysis.md').exists())
+        self.assertFalse(pipeline._path(run, '06-infographic.svg').exists())
+        self.assertFalse(scratch.exists())
+        pipeline._runs.pop(run['id'])
+        self.assertEqual(pipeline.get(run['id'])['usage_total']['total_tokens'], 0)
+
+    def test_reset_is_rejected_while_busy_and_never_deletes_downloads_in_a_work_folder(self):
+        run = pipeline.create('RESET-2')
+        output = pipeline._write(run, '05-analysis.md', 'old analysis')
+        with mock.patch.object(pipeline, 'executor') as active:
+            active.busy = True
+            with self.assertRaises(RuntimeError):
+                pipeline.reset_workflow(run['id'])
+        self.assertTrue(output.exists())
+        unusual = pipeline.run_dir(run['id']) / 'ctx' / 'download.zip'
+        unusual.parent.mkdir(); unusual.write_bytes(b'keep')
+        run['attachments'] = [{'filename': unusual.name, 'path': str(unusual)}]
+        pipeline.reset_workflow(run['id'])
+        self.assertTrue(unusual.exists(), 'an attachment wins over scratch-folder cleanup')
+
 
 if __name__ == "__main__":
     unittest.main()

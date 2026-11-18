@@ -247,9 +247,11 @@ class Handler(BaseHTTPRequestHandler):
                 if body.get("start", True):
                     pipeline.executor.start(run["id"], until=body.get("until"))
                 return self._send(200, pipeline.view(run))
-            m = re.fullmatch(r"/api/runs/([^/]+)/(start|inputs|gate|timezone|log-scan|graph-query|open-folder|attachments|extract|delete)", p)
+            m = re.fullmatch(r"/api/runs/([^/]+)/(start|inputs|gate|timezone|log-scan|graph-query|open-folder|attachments|extract|delete|reset)", p)
             if m:
                 run_id, action = m.groups()
+                if action == "reset":
+                    return self._send(200, pipeline.view(pipeline.reset_workflow(run_id)))
                 if action == "delete":
                     return self._send(200, {"removed": pipeline.delete_run(run_id)})
                 if action == "extract":

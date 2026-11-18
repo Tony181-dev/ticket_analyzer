@@ -118,6 +118,41 @@ class ComposerTest(unittest.TestCase):
         chat.close.assert_not_called()
         login.close.assert_not_called()
 
+    def test_pick_reuses_the_bootstrap_blank_tab(self):
+        worker = browser.Browser()
+        blank = mock.Mock(url='about:blank')
+        blank.is_closed.return_value = False
+        worker.ctx = mock.Mock(pages=[blank])
+        self.assertIs(worker._pick_page(), blank)
+        worker.ctx.new_page.assert_not_called()
+
+    def test_pinned_tab_is_kept_during_a_silent_sso_redirect(self):
+        worker = browser.Browser()
+        current = mock.Mock(url='https://login.microsoftonline.com/sso')
+        old = mock.Mock(url='https://m365.cloud.microsoft/chat/conversation/old')
+        for page in (current, old): page.is_closed.return_value = False
+        worker.page = current
+        worker.ctx = mock.Mock(pages=[old, current])
+        self.assertIs(worker._pick_page(), current)
+        worker.ctx.new_page.assert_not_called()
+
+    def test_same_session_is_not_reloaded_and_switching_session_reuses_the_tab(self):
+        worker = browser.Browser()
+        page = mock.Mock(url='https://m365.cloud.microsoft/chat/conversation/one?login_hint=user')
+        with mock.patch.object(worker, 'open', return_value=page):
+            self.assertIs(worker.open_chat_page('https://m365.cloud.microsoft/chat/conversation/one?redirfrom=app', False), page)
+            page.goto.assert_not_called()
+            target = 'https://m365.cloud.microsoft/chat/conversation/two'
+            self.assertIs(worker.open_chat_page(target, False), page)
+            page.goto.assert_called_once_with(target, wait_until='domcontentloaded', timeout=60000)
+
+    def test_new_workflow_on_a_bare_chat_url_starts_a_fresh_conversation_in_place(self):
+        worker = browser.Browser()
+        page = mock.Mock(url=browser.URL)
+        with mock.patch.object(worker, 'open', return_value=page), mock.patch.object(worker, '_cards', return_value=['Previous answer']):
+            worker.open_chat_page(browser.URL, False)
+        page.goto.assert_called_once_with(browser.URL, wait_until='domcontentloaded', timeout=60000)
+
 
 FIXTURE = ROOT / "tests" / "fixtures" / "m365_composer.html"
 
@@ -371,6 +406,51 @@ class LivePageTest(unittest.TestCase):
             answer, _, _ = self.worker.chat('Analyze the attached Markdown.')
         self.assertEqual(answer, 'Analysis completed from Markdown evidence.')
         self.assertEqual(self.page.evaluate('window.sentPrompts'), ['Analyze the attached Markdown.'])
+
+
+@unittest.skipIf(browser is None, "playwright not installed")
+class GeneratedImageTest(unittest.TestCase):
+    setUpClass = classmethod(LivePageTest.setUpClass.__func__)
+    tearDownClass = classmethod(LivePageTest.tearDownClass.__func__)
+
+    def setUp(self):
+        self.page = self.browser.new_page()
+        self.page.set_content(FIXTURE.read_text(encoding='utf-8'))
+        self.worker = browser.Browser()
+
+    def tearDown(self):
+        self.page.close()
+
+    def test_image_only_reply_is_downloaded_without_waiting_for_a_text_card(self):
+        self.page.evaluate("""() => {
+          enableSending();
+          document.querySelector('.fai-SendButton').addEventListener('click', () => {
+            if (!window.sentPrompts.length) return;
+            const canvas = document.createElement('canvas'); canvas.width=640; canvas.height=360;
+            const context = canvas.getContext('2d'); context.fillStyle='#102030'; context.fillRect(0,0,640,360);
+            const image = document.createElement('img'); image.src = canvas.toDataURL('image/png');
+            document.body.appendChild(image);
+          });
+        }""")
+        with tempfile.TemporaryDirectory() as folder, \
+                mock.patch.object(self.worker, 'open_chat_page', return_value=self.page), \
+                mock.patch.object(self.worker, 'select_model', return_value='Selected model'), \
+                mock.patch.object(self.worker, 'conversation_url', return_value='https://example.test/generated'):
+            answer, _, _ = self.worker.chat('Create the infographic image.', image_dir=folder)
+            self.assertIn('downloaded', answer)
+            self.assertEqual(len(self.worker.images), 1)
+            self.assertTrue(Path(self.worker.images[0]).read_bytes().startswith(b'\x89PNG\r\n\x1a\n'))
+            self.assertEqual(self.worker._cards(self.page), [], 'this response deliberately has no text card')
+
+    def test_html_download_is_never_saved_as_a_png(self):
+        with tempfile.TemporaryDirectory() as folder, \
+                mock.patch.object(self.worker, 'image_srcs', return_value=['new-image']), \
+                mock.patch.object(self.worker, 'busy', return_value=False), \
+                mock.patch.object(self.worker, 'fetch_image', return_value=b'<html>Sign in</html>'), \
+                mock.patch.object(self.page, 'wait_for_timeout'):
+            with self.assertRaisesRegex(RuntimeError, 'not PNG, JPEG or WebP'):
+                self.worker.collect_images(self.page, [], folder, wait_s=1)
+            self.assertEqual(list(Path(folder).iterdir()), [])
 
 
 @unittest.skipIf(browser is None, "playwright not installed")

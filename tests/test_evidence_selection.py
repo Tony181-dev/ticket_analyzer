@@ -122,13 +122,38 @@ class EvidenceSelectionTest(unittest.TestCase):
             with patch.object(pipeline, "_ask_ai", return_value="Visible version: 20260923") as ask:
                 pipeline.step_analyze(run, {**settings.DEFAULTS, "ai_mode": "m365"}, Mock())
             calls = ask.call_args_list
-            self.assertEqual(len(calls), 6)
+            self.assertEqual(len(calls), 3, "five M365 images use two vision calls plus final analysis")
+            self.assertEqual([len(call.args[3]) for call in calls[:-1]], [3, 2])
             for call in calls[:-1]:
-                self.assertEqual(len(call.args[3]), 3)
-                self.assertEqual(call.args[3][-1].name, "image-analysis.md")
+                self.assertTrue(all(file.suffix == '.png' for file in call.args[3]), 'all upload slots carry images')
+                self.assertIn('Cross-image findings', call.args[2])
+                self.assertIn('Ticket context excerpt', call.args[2])
             self.assertIn(pipeline._path(run, "05-image-evidence.md"), calls[-1].args[3])
             self.assertFalse(any(f.suffix == ".png" for f in calls[-1].args[3]))
             self.assertIn("shot-4.png", pipeline._path(run, "05-image-evidence.md").read_text(encoding="utf-8"))
+
+    def test_cli_image_processing_keeps_the_existing_per_image_calls(self):
+        with tempfile.TemporaryDirectory() as folder, patch.object(paths, 'RUNS', Path(folder)):
+            run = pipeline.create('CLI-IMAGES-1')
+            pipeline._write(run, '01-jira.md', 'Ticket context')
+            images = [Path(folder) / f'cli-{index}.png' for index in range(4)]
+            with patch.object(pipeline, '_ask_ai', return_value='Visible facts') as ask:
+                pipeline._image_brief(run, {**settings.DEFAULTS, 'ai_mode': 'copilot'}, Mock(), images)
+            self.assertEqual(ask.call_count, 4)
+            self.assertTrue(all(call.args[3][-1].name == 'image-analysis.md' for call in ask.call_args_list))
+
+    def test_failed_m365_image_group_is_explicit_without_losing_the_other_group(self):
+        with tempfile.TemporaryDirectory() as folder, patch.object(paths, 'RUNS', Path(folder)):
+            run = pipeline.create('M365-IMAGES-1')
+            pipeline._write(run, '01-jira.md', 'Ticket context')
+            images = [Path(folder) / f'image-{index}.png' for index in range(4)]
+            with patch.object(pipeline, '_ask_ai', side_effect=[RuntimeError('vision unavailable'), 'Visible version: V2']) as ask:
+                result = pipeline._image_brief(run, {**settings.DEFAULTS, 'ai_mode': 'm365'}, Mock(), images)
+            text = result.read_text(encoding='utf-8')
+            self.assertEqual(ask.call_count, 2)
+            self.assertIn('no visual claims', text)
+            self.assertIn('Visible version: V2', text)
+            self.assertTrue(all(image.name in text for image in images))
 
     def test_natural_language_ai_output_is_normalized_without_converting_clock(self):
         focus = pipeline._parse_focus('```json\n' + json.dumps({

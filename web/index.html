@@ -122,6 +122,7 @@
           <div class="muted small data-dir-hint" id="dataDirHint"></div>
         </div>
         <div class="run-actions">
+          <div class="run-buttons">
           <button id="runAll" class="btn btn-primary btn-lg"></button>
           <button id="resumeBtn" class="btn btn-lg" hidden>
             <svg viewBox="0 0 24 24" width="18" height="18"><use href="#i-play"/></svg> <span data-i18n="run.resume">Tiếp tục</span>
@@ -129,6 +130,11 @@
           <button id="stopBtn" class="btn btn-danger btn-lg" hidden>
             <svg viewBox="0 0 24 24" width="18" height="18"><use href="#i-stop"/></svg> <span data-i18n="run.stop">Dừng</span>
           </button>
+          </div>
+          <div class="check-help" id="m365HeadlessOption" hidden>
+            <label class="check small-check"><input type="checkbox" id="m365Headless"> <span data-i18n="cfg.headless">Run M365 hidden (headless)</span></label>
+            <button type="button" class="help-icon" data-help="cfg.headlessHelp" data-i18n-title="help.open">?</button>
+          </div>
         </div>
       </section>
 
@@ -141,6 +147,10 @@
           <div class="flow-head-actions">
             <a id="collabLink" class="btn btn-ghost" target="_blank" rel="noopener" hidden data-i18n="run.openCollab">Mở trang Collab ↗</a>
             <button id="openFolder" class="btn btn-ghost" hidden data-i18n="run.openFolder">Mở thư mục</button>
+            <div class="check-help" id="resetWorkflowControl" hidden>
+              <button id="resetWorkflow" class="btn btn-ghost" type="button" data-i18n="run.reset">Reset workflow</button>
+              <button type="button" class="help-icon" data-help="run.resetHelp" data-i18n-title="help.open">?</button>
+            </div>
           </div>
         </div>
         <ol id="flow" class="flow"></ol>
@@ -335,6 +345,14 @@
         <button class="icon-btn" data-close data-i18n-title="drawer.close">✕</button>
       </div>
       <div id="aboutBody" class="about"></div>
+    </div>
+  </div>
+
+  <div id="resetWorkflowModal" class="modal" hidden>
+    <div class="modal-box help-box" role="dialog" aria-modal="true" aria-labelledby="resetWorkflowTitle" aria-describedby="resetWorkflowText">
+      <h3 id="resetWorkflowTitle" data-i18n="run.reset">Reset workflow</h3>
+      <p id="resetWorkflowIssue"></p><p id="resetWorkflowText" data-i18n="run.resetConfirm"></p>
+      <div class="modal-foot"><button type="button" class="btn" data-close data-i18n="history.cancel">Cancel</button><button type="button" class="btn btn-danger" id="confirmResetWorkflow" data-i18n="run.reset">Reset workflow</button></div>
     </div>
   </div>
 

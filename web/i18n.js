@@ -568,3 +568,19 @@ I18N.extend("en", {"sub.understand": "Preliminary context and evidence plan"});
 I18N.extend("vi", {"history.running": "Đang chạy"});
 
 I18N.extend("en", {"history.running": "Running"});
+
+I18N.extend("vi", {
+  "run.reset": "Reset workflow",
+  "run.resetHelp": "Xóa kết quả các bước, nhật ký, token và thời gian của phiên này để chạy lại từ đầu. Giữ ticket, thiết lập đầu vào, danh sách attachment và file đã tải/giải nén. Trang đã đăng lên Collab được giữ. Chỉ dùng khi hệ thống đang rảnh.",
+  "run.resetConfirm": "Reset workflow của phiên này? Kết quả các bước, nhật ký, token và thời gian đã ghi nhận sẽ bị xóa.\n\nTicket, thiết lập đầu vào và attachment đã tải/giải nén được giữ lại. Trang đã đăng lên Collab được giữ.",
+  "run.resetDone": "Đã reset workflow, token và thời gian",
+  "infographic.autoHelp": "Bật để chạy bước 07. M365 phải tạo ảnh thật và tool tải ảnh về; nếu lỗi thì bước báo lỗi để thử lại. Copilot CLI dùng luồng SVG hiện tại."
+});
+
+I18N.extend("en", {
+  "run.reset": "Reset workflow",
+  "run.resetHelp": "Clear this run’s step outputs, log, token usage and elapsed time to start again. Keep the ticket, inputs, attachment list, downloads and extracted files. Published Collab pages are kept. Available only while idle.",
+  "run.resetConfirm": "Reset this workflow? Step outputs, logs, token usage and recorded elapsed time will be cleared.\n\nThe ticket, inputs, downloaded/extracted attachments and published Collab pages are kept.",
+  "run.resetDone": "Workflow, token usage and elapsed time reset",
+  "infographic.autoHelp": "Run step 07 automatically. M365 must generate a real image for the tool to download; failures are reported for retry. Copilot CLI uses its existing SVG route."
+});

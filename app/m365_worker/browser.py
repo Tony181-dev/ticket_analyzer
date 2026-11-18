@@ -182,7 +182,9 @@ class Browser:
         hosts = ("m365.cloud.microsoft", "microsoft365.com", "office.com")
         chats = [page for page in pages if urlparse(page.url or "").hostname in hosts]
         current = getattr(self, "page", None)
-        keep = current if current in chats else chats[0] if chats else self.ctx.new_page()
+        # Keep the worker's tab even during a transient SSO redirect; reuse a bootstrap blank
+        # page on cold start rather than leaving one more blank tab behind for every request.
+        keep = current if current in pages else chats[0] if chats else pages[0]
         try:
             keep.bring_to_front()
         except Exception:
@@ -945,7 +947,9 @@ class Browser:
     def open_chat_page(self, url, headless):
         page = self.open(headless)
         try:
-            page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            fresh_chat = urlparse(url).path.rstrip("/") == "/chat" and bool(self._cards(page))
+            if not self.same_conversation(page.url, url) or fresh_chat:
+                page.goto(url, wait_until="domcontentloaded", timeout=60000)
             return page
         except Exception as error:
             if not _closed_error(error):
@@ -954,6 +958,17 @@ class Browser:
             page = self.open(headless)
             page.goto(url, wait_until="domcontentloaded", timeout=60000)
             return page
+
+    @staticmethod
+    def same_conversation(current, target):
+        from urllib.parse import parse_qsl
+
+        def key(url):
+            parsed = urlparse(url or "")
+            query = tuple(sorted((name, value) for name, value in parse_qsl(parsed.query)
+                                 if name.casefold() not in ("redirfrom", "login_hint")))
+            return parsed.scheme.lower(), parsed.netloc.lower(), parsed.path.rstrip("/"), query
+        return bool(current and target) and key(current) == key(target)
     def resume_chat_page(self, headless):
         # Stay in the tab that already holds the conversation. Only when it is gone (browser
         # restarted, other tab mode) fall back to a fresh chat.
@@ -977,7 +992,8 @@ class Browser:
         found = []
         script = (
             "() => [...document.images].filter(i => i.complete && i.naturalWidth >= 300 && i.naturalHeight >= 200"
-            " && i.offsetParent !== null).map(i => i.currentSrc || i.src)"
+            " && i.offsetParent !== null && !i.closest('nav, aside, [role=navigation], #m365-chat-input-shared-container, [data-test-id=chat-input-wrapper], [class*=inputWrapper], .fx-Attachment'))"
+            ".map(i => i.currentSrc || i.src)"
         )
         for root in self.roots(page):
             try:
@@ -999,7 +1015,10 @@ class Browser:
                 return base64.b64decode(root.evaluate(script, src))
             except Exception:
                 continue
-        return self.ctx.request.get(src).body()
+        response = self.ctx.request.get(src)
+        if not response.ok:
+            raise RuntimeError(f"Generated image download failed: HTTP {response.status}")
+        return response.body()
     def collect_images(self, page, before, image_dir, wait_s=180):
         # Image generation lags behind the text answer, so keep polling until a new large image shows up.
         known = set(before)
@@ -1014,14 +1033,19 @@ class Browser:
         else:
             raise RuntimeError("No image was generated in the chat answer")
         Path(image_dir).mkdir(parents=True, exist_ok=True)
-        saved = []
-        for index, src in enumerate(new[-3:], 1):
-            data = self.fetch_image(page, src)
-            ext = ".png" if data[:4] == b"\x89PNG" else ".jpg" if data[:2] == b"\xff\xd8" else ".webp" if data[8:12] == b"WEBP" else ".png"
-            target = Path(image_dir) / f"infographic-{index}{ext}"
-            target.write_bytes(data)
-            saved.append(str(target))
-        return saved
+        errors = []
+        for src in reversed(new):
+            try:
+                data = self.fetch_image(page, src)
+                ext = ".png" if data.startswith(b"\x89PNG\r\n\x1a\n") else ".jpg" if data.startswith(b"\xff\xd8") else ".webp" if data[:4] == b"RIFF" and data[8:12] == b"WEBP" else None
+                if ext is None:
+                    raise RuntimeError("Generated image download is not PNG, JPEG or WebP")
+                target = Path(image_dir) / ("infographic-1" + ext)
+                target.write_bytes(data)
+                return [str(target)]
+            except Exception as error:
+                errors.append(str(error))
+        raise RuntimeError("Could not download the generated infographic: " + "; ".join(errors))
     def chat(self, prompt, url=None, files=None, headless=True, model=DEFAULT_MODEL, resume=False, image_dir=None):
         self._request_url = url
         for attempt in range(2):
@@ -1081,6 +1105,13 @@ class Browser:
             before = self._cards(page)
             before_images = self.image_srcs(page) if image_dir else []
             self.send_prompt(page, prompt, before, expected_files=files or [])
+            if image_dir:
+                # Image-only replies may have no readable assistant card at all. Wait for the
+                # generated raster directly rather than waiting four minutes for text first.
+                self.images = self.collect_images(page, before_images, image_dir, wait_s=240)
+                cards = self._cards(page)
+                answer = cards[-1] if cards and (len(cards) > len(before) or cards[-1] != before[-1]) else "Generated infographic image downloaded."
+                return answer, self.conversation_url(page), chosen
             deadline = time.time() + 240
             last = ""
             stable = 0
@@ -1100,8 +1131,6 @@ class Browser:
                     stable = stable + 1 if current == last else 0
                     last = current
                     if stable >= (2 if seen_busy else 4) and not is_busy:
-                        if image_dir:
-                            self.images = self.collect_images(page, before_images, image_dir)
                         return current, self.conversation_url(page), chosen
             raise RuntimeError(
                 "Response timeout: assistant answer card was not detected"

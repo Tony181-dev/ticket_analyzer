@@ -206,7 +206,8 @@ input:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px
 .chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chip button { border: 0; background: none; cursor: pointer; color: var(--ink-3); padding: 0 4px; font-size: 14px; line-height: 1; }
 .chip button:hover { color: var(--err); }
-.run-actions { display: flex; gap: 8px; }
+.run-actions { display: flex; flex-direction: column; gap: 8px; }
+.run-buttons { display: flex; flex-wrap: wrap; gap: 8px; }
 .ls-panel { display: grid; gap: 12px; padding: 12px 0; }
 .ls-panel fieldset { border: 1px solid var(--line); border-radius: 10px; padding: 12px; margin: 0; min-width: 0; }
 .ls-panel legend { padding: 0 6px; font-weight: 650; color: var(--c-log); }
@@ -242,9 +243,9 @@ body.preview-active .layout .node { cursor: wait; }
 
 /* flow diagram ------------------------------------------------------------- */
 .flow-card { padding: 18px 18px 22px; }
-.flow-head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; margin-bottom: 18px; }
+.flow-head { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px; align-items: flex-start; margin-bottom: 18px; }
 .flow-head h2 { margin: 0; font-size: 17px; letter-spacing: -.01em; }
-.flow-head-actions { display: flex; gap: 8px; }
+.flow-head-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .flow {
   list-style: none; margin: 0; padding: 0;
   display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 26px;

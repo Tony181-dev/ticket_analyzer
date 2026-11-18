@@ -498,6 +498,41 @@ def delete_run(run_id):
     return True
 
 
+def reset_workflow(run_id):
+    """Reset local outputs/accounting for one run while preserving its inputs and attachments."""
+    with _lock:
+        if executor.busy:
+            raise RuntimeError(t("err.busy"))
+        run = get(run_id)
+        if not run:
+            raise ValueError("Run not found")
+        root = run_dir(run_id).resolve()
+        preserved = [attachment_folder(run).resolve()]
+        preserved += [Path(item["path"]).resolve() for item in run.get("attachments", []) if item.get("path")]
+        preserved += [Path(file).resolve() for file in run["inputs"].get("log_files", [])]
+        names = {name for artifacts in ARTIFACTS.values() for name, *_ in artifacts}
+        names -= {"01-attachments.md"}
+        names.update({"02-focus.json", "03-catalog.json", "run.log", "logs-prepared", "m365-attachments", "ctx", "06-infographic", "06-refine"})
+        for name in sorted(names):
+            target = root / name
+            resolved = target.resolve()
+            if root not in resolved.parents or any(resolved == keep or keep in resolved.parents or resolved in keep.parents for keep in preserved):
+                continue
+            if target.is_symlink() or target.is_file():
+                target.unlink()
+            elif target.is_dir():
+                shutil.rmtree(target)
+        keep = {key: run[key] for key in ("id", "issue", "created", "inputs", "attachments", "ai_mode")}
+        run.clear()
+        run.update(keep, summary="", session_id=str(uuid.uuid4()), focus={}, gate_state={}, collab={},
+                   copilot_usage=_empty_copilot_usage(), usage_passes=[],
+                   steps={step: {"status": "idle", "note": "", "error": "", "started": None, "ended": None,
+                                 "elapsed_seconds": 0.0, "artifacts": []} for step in ORDER})
+        _save(run)
+        events.publish("run_reset", run_id=run_id)
+        return run
+
+
 def update_inputs(run_id, log_files=None, source_dir=None, auto_attachments=None, download_dir=None, use_codegraph=None,
                   logsleuth_options=None, use_infographic=None, continue_on_optional_error=None,
                   auto_publish_to_collab=None, gate=None, log_shift_minutes=..., data_dir=None):
@@ -1848,11 +1883,13 @@ def _image_files(run):
 
 
 def _image_brief(run, cfg, ex, images):
-    """One image + ticket + instruction fits M365's three-attachment limit.
+    """M365 uses three-image groups; CLI retains its existing per-image evidence flow.
 
     Summaries, rather than a potentially unbounded pile of screenshots, enter final analysis.
     A failed image read is explicit and never blocks useful ticket/log evidence.
     """
+    if cfg.get("ai_mode") == "m365":
+        return _m365_image_brief(run, cfg, ex, images)
     sections = ["# Visual evidence", ""]
     per_image = max(240, min(2000, 24000 // len(images)))
     for image in images:
@@ -1872,6 +1909,36 @@ def _image_brief(run, cfg, ex, images):
             _log(run, f"image {image.name}: {exc}")
             summary = "Image analysis unavailable; no visual claims may be made for this image."
         sections += [f"## {image.name}", "", summary, ""]
+    return _write(run, "05-image-evidence.md", "\n".join(sections))
+
+
+def _m365_image_brief(run, cfg, ex, images):
+    """All three upload slots carry images; instructions and bounded ticket context are inline."""
+    instruction = _instruction("image-batch-analysis.md").read_text(encoding="utf-8")
+    context_file = _path(run, "02-understanding.md") if _done(run, "understand") else _path(run, "01-jira.md")
+    context = context_file.read_text(encoding="utf-8")[:6000] if context_file.is_file() else run.get("summary", "")
+    per_image = max(240, min(2000, 24000 // len(images)))
+    sections = ["# Visual evidence", ""]
+    for offset in range(0, len(images), ai.M365_MAX_FILES):
+        batch = images[offset:offset + ai.M365_MAX_FILES]
+        names = "\n".join(f"{index}. {image.name}" for index, image in enumerate(batch, 1))
+        limit = per_image * len(batch)
+        ex.check()
+        try:
+            prompt = (f"Jira issue {run['issue']}. Inspect this group of {len(batch)} images together. "
+                      f"Return at most {limit} characters for the entire group. {_write_in()}\n\n"
+                      f"Images in upload order:\n{names}\n\n{instruction}\n\n"
+                      f"Ticket context excerpt (incomplete; do not invent missing details):\n<ticket-context>\n{context}\n</ticket-context>")
+            answer = _ask_ai(run, cfg, prompt, batch, run_dir(run["id"]), session_id=run["session_id"], retries=0)
+            ex.check()
+            summary = storage.strip_chat_wrappers(answer)[:limit]
+        except Cancelled:
+            raise
+        except Exception as exc:
+            ex.check()
+            _log(run, f"image batch {offset // ai.M365_MAX_FILES + 1}: {exc}")
+            summary = "Image analysis unavailable for this group; no visual claims may be made for these images."
+        sections += [f"## Image group {offset // ai.M365_MAX_FILES + 1}", "", names, "", summary, ""]
     return _write(run, "05-image-evidence.md", "\n".join(sections))
 
 
@@ -1994,13 +2061,15 @@ def _vector_infographic(run, cfg, ex, analysis):
 
 def _generated_image(run, cfg, ex, analysis, staging):
     """M365 image generation; raises when the model returns no usable image (quota, refusal, timeout)."""
+    guidance = _instruction("infographic.md").read_text(encoding="utf-8").partition("## Image route")[2]
     images = ai.ask_image(cfg, (
         f"Jira issue {run['issue']}. Using the analysis in this conversation (also attached as 05-analysis.md), "
-        "create ONE 16:9 landscape infographic image that summarises the ticket: problem, key facts, timeline, "
-        "root cause, supporting evidence and recommended actions. Follow the attached infographic.md "
-        "(section 'Image route') for layout, style and text rules. " + _write_in() + " "
-        "Generate the image itself; do not reply with text only."),
-        [analysis, _instruction("infographic.md")], staging, session_id=run["session_id"])
+        "use your image-generation tool to CREATE ONE actual 16:9 landscape infographic image now. "
+        "Summarise the problem, key facts, timeline, root cause with confidence, evidence and actions. "
+        "Use only facts in the analysis. The deliverable must be a generated image displayed in this chat, "
+        "not a JSON response, SVG/code, instructions, a design plan or a link to an existing image. "
+        + _write_in() + "\n\nImage layout and style:\n" + guidance),
+        [analysis], staging, session_id=run["session_id"])
     ex.check()
     source = Path(images[0]) if images else None
     if not source or not source.is_file():
@@ -2028,26 +2097,15 @@ def step_infographic(run, cfg, ex):
         old.unlink()
     staging = _path(run, "06-infographic")
     shutil.rmtree(staging, ignore_errors=True)
-    fallback = ""
     try:
         if cfg.get("ai_mode") == "copilot":
             target = _vector_infographic(run, cfg, ex, analysis)
         else:
-            try:
-                target = _generated_image(run, cfg, ex, analysis, staging)
-            except Cancelled:
-                raise
-            except Exception as exc:
-                # M365 image generation fails now and then (daily image quota, refusals, timeouts).
-                # The same facts drawn locally are better than no infographic at all.
-                ex.check()
-                _log(run, "⚠ " + t("log.infographic_fallback", error=str(exc)[:300]))
-                target = _vector_infographic(run, cfg, ex, analysis)
-                fallback = " · " + t("note.infographic_fallback")
+            target = _generated_image(run, cfg, ex, analysis, staging)
     finally:
         shutil.rmtree(staging, ignore_errors=True)
     run["infographic_mode"] = cfg.get("ai_mode")
-    return t("note.infographic", name=target.name, kb=max(1, target.stat().st_size // 1024)) + fallback
+    return t("note.infographic", name=target.name, kb=max(1, target.stat().st_size // 1024))
 
 
 def _infographic(run):

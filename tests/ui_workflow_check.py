@@ -50,8 +50,11 @@ def main():
         "id": "1", "filename": "logs.zip", "size": len(DATA), "kind": "archive", "url": base + "/fixture/logs.zip"}])
     run["steps"]["jira"]["status"] = "done"
     run["steps"]["understand"]["status"] = "done"
+    run['steps']['understand']['elapsed_seconds'] = 37
+    run['usage_passes'] = [{'n': 1, 'input_tokens': 100, 'output_tokens': 50, 'model_calls': 1}]
     pipeline._write(run, "01-jira.md", "Bluetooth disconnects after pairing")
     pipeline._write(run, "02-understanding.md", "# Hiểu sơ bộ ticket\n\nKết nối bị ngắt sau khi ghép đôi. Chưa kiểm tra log.")
+    analysis = pipeline._write(run, '05-analysis.md', 'Old analysis to be cleared by reset')
     pipeline._save(run)
     try:
         with mock.patch.object(server.doctor, "checks", return_value={"checks": []}), \
@@ -63,11 +66,26 @@ def main():
             page.on("pageerror", lambda error: errors.append(str(error)))
             page.goto(base + "/?run=" + run["id"])
             expect(page.locator('#runList .run-item.active')).to_be_visible()
+            expect(page.locator('#m365HeadlessOption')).to_be_hidden()
+            page.locator('.mode-btn[data-mode=m365]').click()
+            expect(page.locator('#m365HeadlessOption')).to_be_visible()
+            page.locator('#m365Headless').uncheck()
+            page.wait_for_function('!document.querySelector("#m365Headless").disabled')
+            assert settings.load()['m365_headless'] is False
+            page.locator('#settingsBtn').click()
+            expect(page.locator('[name=m365_headless]')).not_to_be_checked()
+            page.locator('#settingsModal [data-close]').click()
+            page.locator('#m365Headless').check()
+            page.wait_for_function('!document.querySelector("#m365Headless").disabled')
+            assert settings.load()['m365_headless'] is True
+            page.screenshot(path=str(paths.DATA / 'm365-controls.png'))
             events.publish('busy', run_id=run['id'], busy=True)
             running = page.locator(f'#runList .run-item[data-id="{run["id"]}"]')
             expect(running).to_have_class('run-item active running')
             expect(running.locator('.history-running-tag')).to_contain_text('Đang chạy')
             expect(running.locator('.history-running-tag svg use')).to_have_attribute('href', '#i-gear')
+            expect(page.locator('#m365Headless')).to_be_disabled()
+            expect(page.locator('#resetWorkflow')).to_be_disabled()
             page.locator('#newRun').click()
             expect(running).to_have_class('run-item  running')
             expect(running.locator('.history-running-tag')).to_be_visible()
@@ -75,6 +93,8 @@ def main():
             events.publish('busy', run_id=run['id'], busy=False)
             expect(running.locator('.history-running-tag')).to_have_count(0)
             running.locator('.history-open').click()
+            page.locator('.mode-btn[data-mode=copilot]').click()
+            expect(page.locator('#m365HeadlessOption')).to_be_hidden()
             page.locator('#settingsBtn').click()
             expect(page.locator('.m365-settings [name=m365_model]')).to_be_visible()
             expect(page.locator('.m365-settings [name=m365_headless]')).to_be_visible()
@@ -112,6 +132,22 @@ def main():
             assert [Path(f).name for f in run['inputs']['log_files']] == ['main.log']
             page.screenshot(path=str(paths.DATA / 'attachments.png'))
             page.locator('#attProgModal [data-close]').click()
+            page.locator('#resetWorkflowControl [data-help]').click()
+            expect(page.locator('#helpModal')).to_be_visible()
+            page.locator('#helpModal [data-close]').first.click()
+            page.locator('#resetWorkflow').click()
+            page.screenshot(path=str(paths.DATA / 'reset-confirmation.png'))
+            page.locator('#resetWorkflowModal [data-close]').click()
+            assert analysis.exists() and run['usage_total']['total_tokens'] > 0
+            previous_session = run['session_id']
+            page.locator('#resetWorkflow').click()
+            page.locator('#confirmResetWorkflow').click()
+            expect(page.locator('#resetWorkflowModal')).to_be_hidden()
+            assert not analysis.exists()
+            assert run['usage_total']['total_tokens'] == 0
+            assert all(state['elapsed_seconds'] == 0 for state in run['steps'].values())
+            assert run['session_id'] != previous_session
+            assert (paths.DATA / 'downloads' / 'UI-1' / 'logs.zip').exists()
             page.locator('#runList .run-item').hover()
             expect(page.locator('.history-delete')).to_have_css('opacity', '1')
             page.locator('.history-delete').click()
