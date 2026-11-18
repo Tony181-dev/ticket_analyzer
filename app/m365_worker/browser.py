@@ -137,6 +137,7 @@ class Browser:
         self.pw = self.ctx = self.page = None
         self.mode = None
         self.images = []
+        self._session_models = {}
     def close(self):
         ctx, pw = self.ctx, self.pw
         self.ctx = self.page = self.pw = None
@@ -309,6 +310,7 @@ class Browser:
             self.close()
     def logout(self):
         self.close()
+        self._session_models = {}
         shutil.rmtree(PROFILE, ignore_errors=True)
     def _click_first(self, page, selectors, timeout=3000):
         last_error = None
@@ -953,11 +955,13 @@ class Browser:
         detail = "files still processing" if state and state["uploading"] else "Send unavailable or submission not acknowledged"
         raise RuntimeError(f"PROMPT_NOT_SENT: {detail} after {timeout}s; check the M365 chat draft")
     def open_chat_page(self, url, headless):
+        self._opened_fresh_chat = False
         page = self.open(headless)
         try:
             fresh_chat = urlparse(url).path.rstrip("/") == "/chat" and bool(self._cards(page))
             if not self.same_conversation(page.url, url) or fresh_chat:
                 page.goto(url, wait_until="domcontentloaded", timeout=60000)
+                self._opened_fresh_chat = urlparse(url).path.rstrip("/") == "/chat"
             return page
         except Exception as error:
             if not _closed_error(error):
@@ -965,6 +969,7 @@ class Browser:
             self.page = None
             page = self.open(headless)
             page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            self._opened_fresh_chat = urlparse(url).path.rstrip("/") == "/chat"
             return page
 
     @staticmethod
@@ -983,8 +988,33 @@ class Browser:
         page = self.open(headless)
         host = (page.url or "").lower()
         if "m365.cloud.microsoft" in host and not self.login_url(host):
+            self._resumed_existing_chat = True
             return page, page.url
+        self._resumed_existing_chat = False
         return self.open_chat_page(URL, headless), URL
+
+    def session_model(self, page, requested, session_id=None, selected_model=None, url=None):
+        """Pick once per conversation; only a successful selection is cached.
+
+        The worker supplies the last confirmed model when resuming a saved session. A failed
+        upload/answer does not invalidate an already successful selection on this same chat.
+        """
+        key = ("session", session_id) if session_id else ("url", url) if url and not self.same_conversation(url, URL) else None
+        cache = getattr(self, "_session_models", None)
+        if cache is None:
+            cache = self._session_models = {}
+        chosen = cache.get(key) if key else None
+        if not chosen:
+            chosen = selected_model or self.select_model(page, requested)
+            if key:
+                cache[key] = chosen
+                while len(cache) > 5:
+                    cache.pop(next(iter(cache)))
+        return chosen
+
+    def forget_session_model(self, session_id=None, url=None):
+        cache = getattr(self, "_session_models", {})
+        cache.pop(("session", session_id) if session_id else ("url", url), None)
     def conversation_url(self, page):
         # A new chat only gets its own URL a moment after the first answer; None = still the bare /chat page.
         base = URL.split("//", 1)[-1].split("/", 1)[-1].rstrip("/")
@@ -1068,12 +1098,14 @@ class Browser:
             except Exception as error:
                 errors.append(str(error))
         raise RuntimeError("Could not download the generated infographic: " + "; ".join(errors))
-    def chat(self, prompt, url=None, files=None, headless=True, model=DEFAULT_MODEL, resume=False, image_dir=None):
+    def chat(self, prompt, url=None, files=None, headless=True, model=DEFAULT_MODEL, resume=False, image_dir=None,
+             session_id=None, selected_model=None):
         self._request_url = url
         for attempt in range(2):
             self._submission_attempted = False
             try:
-                return self._chat_once(prompt, url, files, headless, model, resume, image_dir)
+                return self._chat_once(prompt, url, files, headless, model, resume, image_dir,
+                                       session_id=session_id, selected_model=selected_model)
             except Exception as error:
                 if not _closed_error(error):
                     raise
@@ -1084,16 +1116,25 @@ class Browser:
                 # open() reuses a surviving context or recreates a closed one. Keep the same mode,
                 # requested model and conversation, without closing other tabs or forcing sign-in.
                 self.page = None
+                self.forget_session_model(session_id, url)
+                selected_model = None  # the chat closed: selection may not have survived recovery
                 url = self._request_url or url
                 resume = False
 
-    def _chat_once(self, prompt, url=None, files=None, headless=True, model=DEFAULT_MODEL, resume=False, image_dir=None):
+    def _chat_once(self, prompt, url=None, files=None, headless=True, model=DEFAULT_MODEL, resume=False, image_dir=None,
+                   session_id=None, selected_model=None):
         self.images = []
         if resume and not url:
             page, target_url = self.resume_chat_page(headless)
+            if not getattr(self, "_resumed_existing_chat", True):
+                self.forget_session_model(session_id)
+                selected_model = None  # no saved URL and the original tab is gone: this is a fresh chat
         else:
             target_url = url or URL
             page = self.open_chat_page(target_url, headless)
+            if getattr(self, "_opened_fresh_chat", False):
+                self.forget_session_model(session_id, url)
+                selected_model = None
         self._request_url = target_url
         try:
             # Wait for the composer before deciding this is a login problem: a transient
@@ -1115,7 +1156,7 @@ class Browser:
                 if self.login_url(page.url):
                     raise RuntimeError("LOGIN_REQUIRED")
                 raise RuntimeError("Composer not found")
-            chosen = self.select_model(page, model)
+            chosen = self.session_model(page, model, session_id, selected_model, url)
             prompt = (prompt or "").strip() or DEFAULT_PROMPT
             # Keep a visible, valid message while file upload/indexing is pending. Previously all
             # uploads had to complete before typing, leaving an empty, unsendable draft on failure.

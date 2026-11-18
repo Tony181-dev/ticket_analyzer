@@ -98,7 +98,7 @@ class ComposerTest(unittest.TestCase):
     def test_closed_after_send_never_automatically_resends(self):
         worker = browser.Browser()
 
-        def closed_after_send(*args):
+        def closed_after_send(*args, **kwargs):
             worker._submission_attempted = True
             raise browser.BrowserClosedError('closed')
 
@@ -152,9 +152,100 @@ class ComposerTest(unittest.TestCase):
         with mock.patch.object(worker, 'open', return_value=page), mock.patch.object(worker, '_cards', return_value=['Previous answer']):
             worker.open_chat_page(browser.URL, False)
         page.goto.assert_called_once_with(browser.URL, wait_until='domcontentloaded', timeout=60000)
+        self.assertTrue(worker._opened_fresh_chat)
 
 
 FIXTURE = ROOT / "tests" / "fixtures" / "m365_composer.html"
+
+
+@unittest.skipIf(browser is None, 'playwright not installed')
+class SessionModelTest(unittest.TestCase):
+    def setUp(self):
+        self.worker = browser.Browser()
+        self.page = mock.Mock()
+        self.cards = []
+        methods = {
+            'open_chat_page': {'return_value': self.page}, 'wait_composer': {'return_value': mock.Mock()},
+            'ensure_prompt': {}, 'clear_attachments': {}, 'upload_files': {}, 'verify_attachments': {},
+            '_cards': {'side_effect': lambda page: list(self.cards)}, 'image_srcs': {'return_value': []},
+            'busy': {'return_value': False}, 'collect_images': {'return_value': ['image.png']},
+            'conversation_url': {'return_value': browser.URL + '/conversation/one'},
+            'send_prompt': {'side_effect': lambda *a, **kw: self.cards.append('Answer ' + str(len(self.cards)))},
+            'select_model': {'side_effect': lambda page, name: name},
+        }
+        for name, kwargs in methods.items():
+            patcher = mock.patch.object(self.worker, name, **kwargs)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def chat(self, **kwargs):
+        return self.worker.chat('Analyze evidence', session_id='workflow-one', **kwargs)
+
+    def test_multiple_text_steps_and_infographic_select_once_and_reuse_the_tab(self):
+        chosen = browser.DEFAULT_MODEL
+        self.assertEqual(self.chat()[2], chosen)
+        self.assertEqual(self.chat(url=browser.URL + '/conversation/one')[2], chosen)
+        self.assertEqual(self.chat(url=browser.URL + '/conversation/one', image_dir='images')[2], chosen)
+        self.worker.select_model.assert_called_once_with(self.page, chosen)
+        self.assertEqual(self.worker.send_prompt.call_count, 3)
+        self.worker.collect_images.assert_called_once()
+        self.page.goto.assert_not_called()
+
+    def test_failed_selection_is_retried_but_success_is_not_selected_again(self):
+        self.worker.select_model.side_effect = [RuntimeError('Picker unavailable'), browser.DEFAULT_MODEL]
+        with self.assertRaisesRegex(RuntimeError, 'Picker unavailable'):
+            self.chat()
+        self.worker.send_prompt.assert_not_called()
+        self.chat()
+        self.chat()
+        self.assertEqual(self.worker.select_model.call_count, 2)
+
+    def test_select_model_retries_only_after_an_actual_selection_failure(self):
+        real = browser.Browser()
+        with mock.patch.object(real, '_select_model_once', side_effect=[RuntimeError('temporary'), 'chosen']) as select, \
+                mock.patch.object(real, '_dismiss_model_menu'):
+            self.assertEqual(real.select_model(self.page), 'chosen')
+        self.assertEqual(select.call_count, 2)
+
+    def test_upload_failure_keeps_the_successfully_selected_model(self):
+        self.worker.upload_files.side_effect = [RuntimeError('Upload rejected'), None]
+        with self.assertRaisesRegex(RuntimeError, 'Upload rejected'):
+            self.chat()
+        self.chat()
+        self.worker.select_model.assert_called_once()
+
+    def test_saved_session_skips_picker_even_when_worker_was_restarted(self):
+        result = self.chat(url=browser.URL + '/conversation/one', model='Changed config', selected_model='Confirmed model')
+        self.assertEqual(result[2], 'Confirmed model')
+        self.worker.select_model.assert_not_called()
+
+    def test_model_is_fixed_for_a_session_and_a_new_workflow_selects_its_own(self):
+        self.assertEqual(self.chat(model='First model')[2], 'First model')
+        self.assertEqual(self.chat(model='Changed config')[2], 'First model')
+        result = self.worker.chat('New workflow', model='Second model', session_id='workflow-two')
+        self.assertEqual(result[2], 'Second model')
+        self.assertEqual(self.worker.select_model.call_count, 2)
+
+    def test_closed_tab_recovery_can_select_again_before_sending(self):
+        self.worker.upload_files.side_effect = [browser.BrowserClosedError('closed'), None]
+        self.chat()
+        self.assertEqual(self.worker.select_model.call_count, 2)
+        self.worker.send_prompt.assert_called_once()
+
+    def test_missing_original_tab_without_a_saved_url_selects_for_the_fresh_chat(self):
+        self.chat(model='Old model')
+        self.worker._resumed_existing_chat = False
+        with mock.patch.object(self.worker, 'resume_chat_page', return_value=(self.page, browser.URL)):
+            result = self.chat(resume=True, model='New model', selected_model='Old model')
+        self.assertEqual(result[2], 'New model')
+        self.assertEqual(self.worker.select_model.call_count, 2)
+
+    def test_a_fresh_chat_after_a_failed_attempt_does_not_inherit_a_cached_model(self):
+        self.chat(model='Old model')
+        self.worker._opened_fresh_chat = True
+        result = self.chat(model='New model', selected_model='Old model')
+        self.assertEqual(result[2], 'New model')
+        self.assertEqual(self.worker.select_model.call_count, 2)
 
 
 @unittest.skipIf(browser is None, "playwright not installed")

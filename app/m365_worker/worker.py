@@ -63,20 +63,23 @@ def ensure_auth(force=False,quick=False):
  if not prefer_headed and b.auth(quick=quick):auth=True;remember_browser_mode(False);return True
  if b.auth_headed(quick=quick):auth=True;remember_browser_mode(True);return True
  auth=False;return False
-def chat_with_auth_recovery(prompt,conversation_url,files,requested_headless,model,resume=False,image_dir=None):
+def chat_with_auth_recovery(prompt,conversation_url,files,requested_headless,model,resume=False,image_dir=None,
+                            session_id=None,selected_model=None):
  # LOGIN_REQUIRED can be a transient SSO redirect or a tenant rejecting
  # headless Chromium. Verify the saved profile and retry once in the proven
  # mode before reporting that interactive login is genuinely required.
  global auth,prefer_headed
  h=bool(requested_headless) and not prefer_headed
- try:return (*b.chat(prompt,conversation_url,files,h,model,resume,image_dir),h)
+ try:return (*b.chat(prompt,conversation_url,files,h,model,resume,image_dir,
+                     session_id=session_id,selected_model=selected_model),h)
  except Exception as error:
   if str(error)!='LOGIN_REQUIRED':raise
   if h:remember_browser_mode(True)
   auth=None
   if not ensure_auth(force=True):raise
   h=bool(requested_headless) and not prefer_headed
-  return (*b.chat(prompt,conversation_url,files,h,model,resume,image_dir),h)
+  return (*b.chat(prompt,conversation_url,files,h,model,resume,image_dir,
+                  session_id=session_id,selected_model=selected_model),h)
 for line in sys.stdin:
  i=None
  try:
@@ -107,6 +110,7 @@ for line in sys.stdin:
     if p.get('create_session'):
      try:
       rec=s.create(sid,model)
+      b.forget_session_model(sid)  # a new/evicted session has not selected a model in this conversation
      except Exception as session_error:
       traceback.print_exc(file=sys.stderr);emit(err(i,'SESSION_NOT_FOUND','Session not found: '+sid+' ('+str(session_error)+')'));continue
     else:
@@ -123,11 +127,15 @@ for line in sys.stdin:
    conversation_url=given or(rec or{}).get('conversation_url')
    # A session that already talked but has no stored URL (new chats get theirs late) must continue in the open tab, not start another chat.
    resume=bool(rec and rec.get('messages') and not conversation_url)
+   # create() records the requested model before any selection. Only a successful prior chat
+   # (with saved messages) confirms that model, so a failed first selection still retries.
+   selected_model=rec.get('model')if rec and rec.get('messages')else None
    image_dir=str(p.get('image_dir')or'')or None
    try:
     with tempfile.TemporaryDirectory(prefix='ticket-analyzer-m365-',ignore_cleanup_errors=True) as transport_dir:
      sent_files,transport_note=transport_files(files,transport_dir)
-     content,url,chosen,h=chat_with_auth_recovery(prompt+('\n\n'+transport_note if transport_note else ''),conversation_url,sent_files,h,model,resume,image_dir)
+     content,url,chosen,h=chat_with_auth_recovery(prompt+('\n\n'+transport_note if transport_note else ''),conversation_url,sent_files,h,model,resume,image_dir,
+                                               session_id=sid,selected_model=selected_model)
    except Exception as e:
     if str(e)=='LOGIN_REQUIRED':
      auth=False;emit(err(i,'M365_LOGIN_REQUIRED','M365 login required'));continue
