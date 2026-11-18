@@ -59,48 +59,51 @@ _SUBMENU_TRIGGERS = ('[data-testid^="gptSubMenuModelTrigger"][aria-haspopup="men
                      '[data-test-id^="gptSubMenuModelTrigger"][aria-haspopup="menu"]')
 _MODEL_MENU_ROWS = ('[data-testid^="gptSubMenuModelTrigger"]', '[data-test-id^="gptSubMenuModelTrigger"]',
                     '[role="menuitemradio"]')
-# Upload progress of one file, looked for in the composer area only (M365's input wrapper around the Lexical
-# editor): chips naming the file (text, title or aria-label; the name without its extension counts too),
-# entries of the attachment list, and visible progress indicators.
-_UPLOAD_STATE_JS = r"""(name) => {
-  const low = (s) => (s || '').toLowerCase();
-  const full = low(name), stem = low(name.replace(/\.[^.]+$/, ''));
-  const shown = (el) => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
-  const editor = document.querySelector('#m365-chat-editor-target-element')
-    || document.querySelector('[data-lexical-editor="true"][contenteditable="true"]')
-    || document.querySelector('[role="textbox"][contenteditable="true"]');
-  let area = editor && (editor.closest('[class*="inputWrapper" i]') || editor.closest('[class*="ChatInput" i]'));
-  if (!area && editor) { area = editor; for (let i = 0; i < 4 && area.parentElement; i++) area = area.parentElement; }
-  const scope = area || document.body;
-  const named = (el) => [el.getAttribute('title'), el.getAttribute('aria-label'), el.textContent].map(low)
-    .some((v) => v.includes(full) || (stem.length >= 4 && v.includes(stem)));
-  let chips = 0;
-  for (const el of scope.querySelectorAll('*')) {
-    if ((editor && editor.contains(el)) || !shown(el) || !named(el)) continue;
-    if ([...el.children].some(named)) continue;  // count the innermost element of a chip once
-    chips++;
-  }
-  const list = scope.querySelector('[class*="attachments" i]');
-  const items = list ? [...list.children].filter(shown).length : 0;
-  const busy = [...scope.querySelectorAll('[role="progressbar"], [aria-busy="true"], [class*="spinner" i]')].some(shown);
-  const errors = [...scope.querySelectorAll('[role="alert"]')].filter(shown).map(el => el.textContent.trim()).filter(Boolean);
-  return { scoped: !!area, chips, items, busy, errors };
-}"""
-_DRAFT_STATE_JS = r"""el => {
-  if (!el.isConnected) return null;
-  const shown = node => !!(node.offsetWidth || node.offsetHeight || node.getClientRects().length);
-  const scope = el.closest('[class*="inputWrapper" i]') || el.closest('[class*="ChatInput" i]') || el.parentElement;
-  const list = scope && scope.querySelector('[class*="attachments" i]');
-  return {
-    text: el.tagName === 'TEXTAREA' ? el.value : el.innerText,
-    attachments: list ? [...list.children].filter(shown).length : 0,
-    uploading: !!scope && [...scope.querySelectorAll('[role="progressbar"], [aria-busy="true"], [class*="spinner" i]')].some(shown)
+# All composer operations share the same scope. The common composer replaced the legacy
+# ChatInput wrapper; its attachment tray is 13 ancestors above the editor in the supplied DOM.
+_COMPOSER_DOM_JS = r"""
+  const shown = el => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+  const findEditor = () => {
+    for (const selector of ['#m365-chat-editor-target-element', '[data-lexical-editor="true"][contenteditable="true"]', '[role="textbox"][contenteditable="true"]', 'textarea']) {
+      const el = [...document.querySelectorAll(selector)].find(shown);
+      if (el) return el;
+    }
+    return null;
   };
+  const composerScope = editor => editor && (
+    editor.closest('#m365-chat-input-shared-container, [data-test-id="chat-input-wrapper"], [data-testid="chat-input-wrapper"]')
+    || editor.closest('[class*="inputWrapper" i]') || editor.closest('[class*="ChatInput" i]')
+    || editor.closest('form') || editor.parentElement);
+  const composerFiles = scope => {
+    if (!scope) return [];
+    const modern = [...scope.querySelectorAll('.fx-Attachment, [id^="composer-attachment-"]')].filter(shown);
+    if (modern.length) return modern.filter(el => !modern.some(parent => parent !== el && parent.contains(el)));
+    const list = scope.querySelector('[class*="attachments" i]');
+    return list ? [...list.children].filter(shown) : [];
+  };
+  const uploading = scope => !!scope && (scope.matches('[aria-busy="true"]')
+    || [...scope.querySelectorAll('[role="progressbar"], [aria-busy="true"], [class*="spinner" i]')].some(shown));
+"""
+_UPLOAD_STATE_JS = '(name) => {' + _COMPOSER_DOM_JS + r"""
+  const editor = findEditor(), scope = composerScope(editor);
+  const cards = composerFiles(scope);
+  const full = name.toLowerCase(), stem = full.replace(/\.[^.]+$/, '');
+  const named = card => [card, ...card.querySelectorAll('*')].some(el =>
+    [el.getAttribute('title'), el.getAttribute('aria-label'), el.textContent].some(value => {
+      const text = (value || '').toLowerCase();
+      return text.includes(full) || (stem.length >= 4 && text.includes(stem));
+    }));
+  const errors = scope ? [...scope.querySelectorAll('[role="alert"]')].filter(shown).map(el => el.textContent.trim()).filter(Boolean) : [];
+  return {scoped: !!scope, chips: cards.filter(named).length, items: cards.length, busy: uploading(scope), errors};
 }"""
-_ATTACHMENT_BLOCKER_JS = r"""() => {
-  const shown = el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
-  const editor = document.querySelector('#m365-chat-editor-target-element, [data-lexical-editor="true"], [role="textbox"][contenteditable="true"], textarea');
-  const scope = editor && (editor.closest('[class*="inputWrapper" i]') || editor.closest('[class*="ChatInput" i]') || editor.closest('form') || editor.parentElement);
+_DRAFT_STATE_JS = 'el => {' + _COMPOSER_DOM_JS + r"""
+  if (!el.isConnected) return null;
+  const scope = composerScope(el);
+  return {text: el.tagName === 'TEXTAREA' ? el.value : el.innerText,
+    attachments: composerFiles(scope).length, uploading: uploading(scope)};
+}"""
+_ATTACHMENT_BLOCKER_JS = '() => {' + _COMPOSER_DOM_JS + r"""
+  const editor = findEditor(), scope = composerScope(editor);
   const texts = [];
   if (scope) for (const el of scope.querySelectorAll('*')) {
     if (!shown(el) || el === editor || editor.contains(el)) continue;
@@ -117,6 +120,7 @@ _ATTACHMENT_BLOCKER_JS = r"""() => {
   const blocked = /remove\s+(?:the\s+)?(?:file\s+)?attachments?\s+to\s+send|attachments?.*(?:not supported|unsupported|not allowed)|file (?:type|format).*(?:not supported|unsupported)|(?:cannot|can't|unable to)\s+(?:upload|attach)|file.*too large|(?:xóa|xoá|gỡ|bỏ).*(?:tệp đính kèm|tệp|đính kèm).*(?:gửi)|첨부.*(?:제거|삭제).*전송/i;
   return (texts.find(text => blocked.test(text)) || '').trim().slice(0, 400);
 }"""
+
 def launch_args():
     # Must stay identical to setup.py's launch_args() so the profile behaves the same way
     # during the interactive setup login as it does later during headless/headed automation.
@@ -529,6 +533,37 @@ class Browser:
                 if attempt < attempts:
                     page.wait_for_timeout(500 * attempt)
         raise RuntimeError(f"Unable to select {requested} after {attempts} attempts: {last_error}")
+    def composer_scope(self, page):
+        box = self.composer(page)
+        if box is None:
+            return None
+        for query in (
+            "xpath=ancestor::*[@id='m365-chat-input-shared-container' or @data-test-id='chat-input-wrapper' or @data-testid='chat-input-wrapper'][1]",
+            "xpath=ancestor::*[contains(@class, 'inputWrapper') or contains(@class, 'ChatInput') or self::form][1]",
+        ):
+            scope = box.locator(query)
+            if scope.count():
+                return scope
+        return None
+
+    def clear_attachments(self, page):
+        """Remove only unsent composer attachments before staging this request's complete file set."""
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            self.check_page(page)
+            if not self._upload_state(page, "")["items"]:
+                return
+            scope = self.composer_scope(page)
+            if scope is None:
+                break
+            buttons = scope.locator(".fx-Attachment__dismissButton, [class*='attachments' i] button[aria-label*='remove' i], [class*='attachments' i] button[aria-label*='xóa' i], [class*='attachments' i] button[aria-label*='xoá' i], [class*='attachments' i] button[aria-label*='삭제']")
+            button = next((buttons.nth(i) for i in range(buttons.count()) if buttons.nth(i).is_visible()), None)
+            if button is None:
+                break
+            button.click(timeout=2000)
+            page.wait_for_timeout(150)
+        raise RuntimeError("M365_DRAFT_NOT_CLEARED: old unsent attachments could not be removed; no prompt was sent")
+
     def file_input(self, page, file_path=None):
         candidates = []
         for root in self.roots(page):
@@ -537,8 +572,10 @@ class Browser:
                 for index in range(matches.count()):
                     item = matches.nth(index)
                     accept = item.get_attribute("accept") or ""
-                    if item.is_enabled() and _accepts_file(accept, file_path):
-                        candidates.append((bool(accept), item))
+                    files = file_path if isinstance(file_path, (list, tuple)) else [file_path]
+                    if item.is_enabled() and all(_accepts_file(accept, file) for file in files):
+                        score = int(bool(accept)) + 2 * (item.get_attribute("id") == "upload-file-button")
+                        candidates.append((score, item))
             except Exception:
                 pass
         return max(candidates, key=lambda pair: pair[0])[1] if candidates else None
@@ -582,47 +619,74 @@ class Browser:
             best = best or state
         return best or {"chips": 0, "items": 0, "busy": False}
     def upload(self, page, file_path, timeout=None):
-        """Attach one file and wait until M365 shows it as uploaded.
+        """Upload one file, verifying its own chip rather than an unrelated list change."""
+        self._upload_paths(page, [file_path], timeout)
 
-        Done = one more chip naming the file (full name, name without extension, or its tooltip) or one more
-        entry in the attachment list than before, with no visible progress indicator left in the composer.
-        Only the composer area counts: the same file name already in the conversation (an earlier step)
-        and spinners elsewhere on the page (hidden or not) used to make this wait return too early or time
-        out ("Attachment upload did not complete")."""
+    def upload_files(self, page, files, timeout=None):
+        files = list(files or [])
+        if not files:
+            return
+        if len(files) == 1:
+            if timeout is None:
+                self.upload(page, files[0])
+            else:
+                self.upload(page, files[0], timeout)
+            return
+        control = self.file_input(page, files)
+        if control is not None and control.get_attribute("multiple") is not None:
+            self._upload_paths(page, files, timeout)
+        else:
+            for file in files:
+                self.upload(page, file, timeout)
+        self.verify_attachments(page, files)
+
+    def verify_attachments(self, page, files):
         self.check_page(page)
-        file_input = self.file_input(page, file_path)
-        if not file_input:
-            raise RuntimeError(f"M365_ATTACHMENT_INPUT: no enabled upload control accepts {Path(file_path).name}; check the selected model/session")
-        name = Path(file_path).name
-        size = Path(file_path).stat().st_size
+        states = [(Path(file).name, self._upload_state(page, Path(file).name)) for file in files]
+        missing = [name for name, state in states if not state["scoped"] or not state["chips"]]
+        if missing or any(state["busy"] for _, state in states):
+            raise RuntimeError("M365_ATTACHMENT_MANIFEST: attachments are missing or still processing: " + ", ".join(missing or [name for name, _ in states]))
+        actual = self._upload_state(page, "")["items"]
+        if actual != len(files):
+            raise RuntimeError(f"M365_ATTACHMENT_MANIFEST: expected {len(files)} files, found {actual}; no prompt was sent")
+
+    def _upload_paths(self, page, files, timeout=None):
+        self.check_page(page)
+        file_input = self.file_input(page, files)
+        names = [Path(file).name for file in files]
+        if file_input is None:
+            raise RuntimeError("M365_ATTACHMENT_INPUT: no enabled upload control accepts " + ", ".join(names))
+        sizes = {Path(file).name: Path(file).stat().st_size for file in files}
         if timeout is None:
-            timeout = min(120, 60 + (size // (256 * 1024)) * 5)
-        before = self._upload_state(page, name)
-        file_input.set_input_files(file_path)
-        began = time.time()
-        deadline = began + timeout
-        state = before
+            timeout = min(120, 60 + (sum(sizes.values()) // (256 * 1024)) * 5)
+        before = {name: self._upload_state(page, name) for name in names}
+        file_input.set_input_files([str(file) for file in files])
+        began = time.monotonic()
         ready = 0
         probed = False
-        while time.time() < deadline:
+        missing = names
+        while time.monotonic() - began < timeout:
             self.check_page(page)
             page.wait_for_timeout(400)
-            state = self._upload_state(page, name)
-            added = state["chips"] > before["chips"] or state["items"] > before["items"]
-            reveal = not probed and not state["busy"] and (added or time.time() - began >= 1)
+            states = {name: self._upload_state(page, name) for name in names}
+            missing = [name for name, state in states.items() if state["chips"] <= before[name]["chips"]]
+            busy = any(state["busy"] for state in states.values())
+            reveal = not probed and not busy and (not missing or time.monotonic() - began >= 1)
             blocker = self.attachment_blocker(page, reveal=reveal)
             probed = probed or reveal
+            first = missing[0] if missing else names[0]
             if blocker:
-                raise RuntimeError(f"M365_ATTACHMENT_BLOCKED: Attachment rejected: {name} ({size:,} B): {blocker}. No prompt was sent; check the selected model/session and attachment policy")
-            failures = [text for text in state.get("errors", []) if re.search(
+                raise RuntimeError(f"M365_ATTACHMENT_BLOCKED: Attachment rejected: {first} ({sizes[first]:,} B): {blocker}. No prompt was sent")
+            failures = [text for state in states.values() for text in state.get("errors", []) if re.search(
                 r"failed|error|unsupported|too large|unable|couldn.t|can.t upload|không thể|quá lớn|không hỗ trợ|실패|너무 큽", text, re.I)]
             if failures:
-                raise RuntimeError(f"M365_ATTACHMENT_BLOCKED: Attachment rejected: {name} ({size:,} B): {failures[0][:300]}")
-            ready = ready + 1 if added and not state["busy"] else 0
+                raise RuntimeError(f"M365_ATTACHMENT_BLOCKED: Attachment rejected: {first} ({sizes[first]:,} B): {failures[0][:300]}")
+            ready = ready + 1 if not missing and not busy else 0
             if ready >= 2:
                 return
-        reason = "still uploading" if state["chips"] > before["chips"] or state["items"] > before["items"] else "no file chip appeared"
-        raise RuntimeError(f"Attachment upload did not complete: {name} ({size:,} B; {reason} after {timeout}s)")
+        detail = ", ".join(f"{name} ({sizes[name]:,} B)" for name in missing or names)
+        raise RuntimeError(f"Attachment upload did not complete: {detail} (missing chip or still processing after {timeout}s)")
+
     def _cards(self, page):
         output, seen = [], set()
         selectors = (
@@ -725,8 +789,8 @@ class Browser:
         box = self.composer(page)
         if box is not None:
             try:
-                scope = box.locator("xpath=ancestor::*[contains(@class, 'inputWrapper') or contains(@class, 'ChatInput') or self::form][1]")
-                if scope.count():
+                scope = self.composer_scope(page)
+                if scope is not None:
                     scopes.append(scope)
             except Exception:
                 pass
@@ -784,7 +848,7 @@ class Browser:
                     continue
         return False
 
-    def send_prompt(self, page, prompt, before, timeout=60):
+    def send_prompt(self, page, prompt, before, timeout=60, expected_files=None):
         """Wait for upload/Send readiness, then require acknowledgement before waiting for an answer."""
         self.ensure_prompt(page, prompt)
         deadline = time.monotonic() + timeout
@@ -827,6 +891,8 @@ class Browser:
                         page.wait_for_timeout(250)
                         continue  # M365 replaced the editor/button while checking readiness.
                     if enabled:
+                        if expected_files is not None:
+                            self.verify_attachments(page, expected_files)
                         # A click can reach M365 even when Playwright subsequently reports a timeout.
                         # Observe the draft before any retry rather than treating that as "not sent".
                         attempted, last_action = True, now
@@ -839,6 +905,8 @@ class Browser:
                         # Some tenants expose only the editor shortcut. A disabled Send must be awaited.
                         current = self.composer(page)
                         if current is not None:
+                            if expected_files is not None:
+                                self.verify_attachments(page, expected_files)
                             attempted, last_action = True, now
                             self._submission_attempted = True
                             try:
@@ -1006,12 +1074,13 @@ class Browser:
             # Keep a visible, valid message while file upload/indexing is pending. Previously all
             # uploads had to complete before typing, leaving an empty, unsendable draft on failure.
             self.ensure_prompt(page, prompt)
-            for file_path in files or []:
-                self.upload(page, file_path)
-                self.ensure_prompt(page, prompt)
+            self.clear_attachments(page)
+            self.upload_files(page, files)
+            self.verify_attachments(page, files or [])
+            self.ensure_prompt(page, prompt)
             before = self._cards(page)
             before_images = self.image_srcs(page) if image_dir else []
-            self.send_prompt(page, prompt, before)
+            self.send_prompt(page, prompt, before, expected_files=files or [])
             deadline = time.time() + 240
             last = ""
             stable = 0

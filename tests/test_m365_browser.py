@@ -373,5 +373,75 @@ class LivePageTest(unittest.TestCase):
         self.assertEqual(self.page.evaluate('window.sentPrompts'), ['Analyze the attached Markdown.'])
 
 
+@unittest.skipIf(browser is None, "playwright not installed")
+class CommonComposerTest(unittest.TestCase):
+    """The new common-composer structure supplied by the user, with all private data removed."""
+    setUpClass = classmethod(LivePageTest.setUpClass.__func__)
+    tearDownClass = classmethod(LivePageTest.tearDownClass.__func__)
+
+    def setUp(self):
+        self.page = self.browser.new_page()
+        self.page.set_content((ROOT / 'tests/fixtures/m365_common_composer.html').read_text(encoding='utf-8'))
+        self.worker = browser.Browser()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.files = []
+        for name in ('01-jira.md.txt', '01-attachments.md.txt', 'understand.md.txt'):
+            file = Path(self.tmp.name) / name
+            file.write_bytes(b'x' * (112617 if name.startswith('01-jira') else 80))
+            self.files.append(str(file))
+
+    def tearDown(self):
+        self.page.close()
+
+    def test_snapshot_counts_the_ready_chip_outside_the_editors_first_four_ancestors(self):
+        state = self.worker._upload_state(self.page, '01-01-jira.md.txt')
+        self.assertTrue(state['scoped'])
+        self.assertEqual((state['chips'], state['items'], state['busy']), (1, 1, False))
+        self.assertEqual(self.worker.draft_state(self.page)['attachments'], 1)
+        self.assertTrue(self.worker.send_button(self.page).is_enabled())
+        self.assertEqual(self.worker.file_input(self.page, self.files).get_attribute('id'), 'upload-file-button')
+
+    def test_uploads_the_complete_set_in_one_selection_then_reaches_send(self):
+        self.worker.clear_attachments(self.page)
+        self.worker.upload_files(self.page, self.files, timeout=5)
+        self.worker.send_prompt(self.page, 'Read all three evidence files.', [], timeout=4)
+        messages = self.page.evaluate('window.sentMessages')
+        self.assertEqual(messages, [{'prompt': 'Read all three evidence files.', 'files': [Path(file).name for file in self.files]}])
+        events = self.page.evaluate('window.events')
+        self.assertEqual(events[0], 'remove:01-01-jira.md.txt')
+        self.assertEqual(len([event for event in events if event.startswith('upload:')]), 1)
+        self.assertEqual(events[-1], 'send')
+
+    def test_partial_upload_never_reaches_send(self):
+        self.worker.clear_attachments(self.page)
+        self.page.evaluate("window.omitFile = 'understand.md.txt'")
+        with self.assertRaisesRegex(RuntimeError, 'Attachment upload did not complete:.*understand.md.txt'):
+            self.worker.upload_files(self.page, self.files, timeout=1.5)
+        self.assertEqual(self.page.evaluate('window.sentMessages'), [])
+
+    def test_manifest_rejects_an_unexpected_extra_attachment(self):
+        self.worker.clear_attachments(self.page)
+        self.worker.upload_files(self.page, self.files, timeout=5)
+        self.page.evaluate("""() => {
+          const card = document.createElement('div'); card.className = 'fx-Attachment';
+          card.textContent = 'unselected.txt'; document.getElementById('attachmentTray').appendChild(card);
+        }""")
+        with self.assertRaisesRegex(RuntimeError, 'M365_ATTACHMENT_MANIFEST: expected 3 files, found 4'):
+            self.worker.verify_attachments(self.page, self.files)
+        self.assertEqual(self.page.evaluate('window.sentMessages'), [])
+
+    def test_two_pipeline_turns_upload_send_and_collect_real_fixture_responses(self):
+        with mock.patch.object(self.worker, 'open_chat_page', return_value=self.page), \
+                mock.patch.object(self.worker, 'select_model', return_value='Selected model'), \
+                mock.patch.object(self.worker, 'conversation_url', return_value='https://example.test/conversation'):
+            first, _, _ = self.worker.chat('Understand the ticket.', files=self.files)
+            second, _, _ = self.worker.chat('Analyze the ticket with the new evidence.', files=self.files[:2])
+        self.assertEqual(first, 'Response 1: completed from all supplied evidence.')
+        self.assertEqual(second, 'Response 2: completed from all supplied evidence.')
+        self.assertEqual([message['files'] for message in self.page.evaluate('window.sentMessages')],
+                         [[Path(file).name for file in self.files], [Path(file).name for file in self.files[:2]]])
+
+
 if __name__ == "__main__":
     unittest.main()

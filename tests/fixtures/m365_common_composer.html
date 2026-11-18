@@ -1,0 +1,74 @@
+<!doctype html>
+<!-- Reduced and anonymized from the user's 2026-11-18 DOM. Stable attributes and the
+     editor/attachment/send hierarchy are preserved; tenant data and conversation text are removed. -->
+<html lang="en"><head><meta charset="utf-8"><style>
+  [hidden] { display:none } .fx-Attachment { display:block; padding:8px }
+  [contenteditable] { display:block; min-width:400px; min-height:40px }
+</style></head><body>
+  <aside><div class="fx-Attachment">01-jira.md.txt</div><div aria-busy="true">History widget</div></aside>
+  <div hidden><span id="m365-chat-editor-target-element" contenteditable="true"></span></div>
+  <input id="upload-file-button" type="file" multiple accept=".txt,text/plain,.md,text/markdown,.png,image/png" style="display:none">
+  <div data-test-id="chat-input-wrapper" id="m365-chat-input-shared-container">
+    <div><div><div><div data-testid="common-composer-banner">
+      <div role="alert">Uploading from device will send a copy to OneDrive (work/school). Manage uploads</div>
+    </div><div><div><div><div><div class="RXo0ZDhT"><div class="MXYyX0cx aGE5N3RL">
+      <div id="attachmentTray">
+        <div class="fx-Attachment" id="composer-attachment-composer-file-1">
+          <span class="fx-Attachment__primaryAction"><span class="fx-Attachment__content"><span>01-01-jira.md</span></span><span>Text file</span></span>
+          <button class="fx-Attachment__dismissButton" aria-label="Remove 01-01-jira.md.txt">×</button>
+        </div>
+      </div>
+      <div class="UWRacVVF b0lob0pQ"><div class="UWtvTmFf VkN1T090"><div class="cFhyQ01M QUgyZWV2"><span class="fai-EditorInput">
+        <span role="textbox" contenteditable="true" tabindex="0" aria-label="Message Copilot" aria-multiline="true" class="fai-EditorInput__input" data-lexical-editor="true"><p>Read the attached ticket and follow understand.md.</p></span>
+      </span></div></div>
+      <button type="button" aria-label="Add attachments">+</button>
+      <input hidden multiple aria-label="Upload files (PDF, Word, Excel, images)" type="file">
+      <button type="button" aria-label="Send" id="sendButton">↑</button>
+      </div>
+    </div></div></div></div></div></div></div></div></div></div>
+  </div>
+  <script>
+    window.events = []; window.sentMessages = []; window.omitFile = null;
+    const editor = document.querySelector('.fai-EditorInput__input');
+    const tray = document.getElementById('attachmentTray'), send = document.getElementById('sendButton');
+    const ready = () => { send.disabled = !editor.innerText.trim() || !!tray.querySelector('[role="progressbar"]'); };
+    tray.addEventListener('click', event => {
+      const remove = event.target.closest('.fx-Attachment__dismissButton');
+      if (!remove) return;
+      window.events.push('remove:' + remove.getAttribute('aria-label').slice(7));
+      remove.closest('.fx-Attachment').remove(); ready();
+    });
+    document.getElementById('upload-file-button').addEventListener('change', event => {
+      const files = [...event.target.files];
+      window.events.push('upload:' + files.map(file => file.name).join(','));
+      // One selection replaces the previous selection, so sequential uploads would lose evidence.
+      tray.replaceChildren();
+      for (const [index, file] of files.entries()) {
+        if (file.name === window.omitFile) continue;
+        const card = document.createElement('div');
+        card.className = 'fx-Attachment'; card.id = 'composer-attachment-file-' + index;
+        card.innerHTML = '<span class="fx-Attachment__content"></span><div role="progressbar">Processing</div><button class="fx-Attachment__dismissButton">×</button>';
+        card.querySelector('span').textContent = file.name.replace(/\.[^.]+$/, '');
+        card.querySelector('button').setAttribute('aria-label', 'Remove ' + file.name);
+        tray.appendChild(card);
+        setTimeout(() => { card.querySelector('[role="progressbar"]').remove(); ready(); }, 450);
+      }
+      ready();
+    });
+    const submit = source => {
+      if (send.disabled) return;
+      const files = [...tray.querySelectorAll('.fx-Attachment__dismissButton')].map(button => button.getAttribute('aria-label').slice(7));
+      window.events.push(source); window.sentMessages.push({prompt:editor.innerText.trim(), files});
+      editor.replaceChildren(); tray.replaceChildren(); ready();
+      const answer = document.createElement('div'); answer.dataset.messageAuthorRole = 'assistant';
+      answer.textContent = 'Response ' + window.sentMessages.length + ': completed from all supplied evidence.';
+      document.body.appendChild(answer);
+    };
+    send.onclick = () => submit('send');
+    editor.addEventListener('input', ready);
+    editor.addEventListener('keydown', event => {
+      if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); submit('enter'); }
+    });
+    ready();
+  </script>
+</body></html>

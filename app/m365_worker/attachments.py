@@ -10,11 +10,15 @@ MAX_FILES=3
 def transport_files(files, folder):
  """Stage already-validated text as byte-identical .txt files for tenant upload compatibility."""
  folder=Path(folder);folder.mkdir(parents=True,exist_ok=True)
- result=[];mapping=[]
- for index,file in enumerate(files,1):
+ result=[];mapping=[];used=set()
+ for file in files:
   source=Path(file)
   if source.suffix.lower() in {'.md','.json','.log','.jsonl','.yaml','.yml','.xml','.csv'}:
-   target=folder/f'{index:02}-{source.name}.txt'
+   name=f'{source.name}.txt'
+   counter=2
+   while name.casefold() in used:
+    name=f'{source.stem}-{counter}{source.suffix}.txt';counter+=1
+   used.add(name.casefold());target=folder/name
    shutil.copyfile(source,target)
    result.append(str(target));mapping.append(f'{source.name} -> {target.name}')
   else:result.append(str(source))

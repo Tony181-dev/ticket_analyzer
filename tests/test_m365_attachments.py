@@ -114,6 +114,7 @@ class PackTest(unittest.TestCase):
         sent, note = worker_attachments.transport_files(validated, self.dir / 'transport')
         self.assertEqual(len(sent), 1)
         self.assertTrue(sent[0].endswith('.md.txt'))
+        self.assertEqual(Path(sent[0]).name, '01-jira.md.txt', 'do not prepend a redundant 01- to an already numbered file')
         self.assertEqual(Path(sent[0]).read_bytes(), original.read_bytes())
         self.assertEqual(original.stat().st_size, 112617)
         self.assertIn('01-jira.md -> ', note)
@@ -134,6 +135,17 @@ class PackTest(unittest.TestCase):
         sensitive = self.make('credentials.json', '{"secret": "not for upload"}')
         with self.assertRaisesRegex(ValueError, 'sensitive'):
             worker_attachments.validate([{'path': str(sensitive)}])
+
+    def test_transport_suffix_never_overwrites_another_original_filename(self):
+        files = []
+        for index, name in enumerate(('same-2.md', 'same.md', 'same.md')):
+            source = self.dir / str(index) / name
+            source.parent.mkdir()
+            source.write_text(str(index), encoding='utf-8')
+            files.append(source)
+        sent, _ = worker_attachments.transport_files(files, self.dir / 'transport')
+        self.assertEqual(len(set(sent)), 3)
+        self.assertEqual([Path(file).read_text(encoding='utf-8') for file in sent], ['0', '1', '2'])
 
 
 if __name__ == "__main__":

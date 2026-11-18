@@ -76,6 +76,8 @@ Mạng công ty chặn SSL: `start.bat` và Setup tự xử lý bằng chứng c
 
 M365 gửi các file văn bản nội bộ (Markdown/JSON/log…) qua bản sao `.txt` giữ nguyên byte, kèm ánh xạ tên file trong prompt; file gốc và giới hạn tải vẫn được giữ. Tool chọn ô upload phù hợp loại file và nhận diện cả thông báo chặn trong tooltip **“Remove attachments to send”**. Nếu model/phiên/tài khoản vẫn chặn attachment, bước dừng với lý do cụ thể để đổi cấu hình thay vì tự đổi model hoặc thử lại cùng tệp. Trang đóng trước khi gửi được phục hồi một lần; nếu đã bấm gửi thì không tự gửi lại để tránh trùng prompt.
 
+Trước mỗi lượt M365, tool dọn attachment chưa gửi trong composer của phiên đang dùng, nhập prompt và tải cả bộ file trong một lần chọn nếu ô upload hỗ trợ nhiều tệp. Tool xác nhận từng tên file trong khay đính kèm của composer mới (`chat-input-wrapper`), rồi kiểm tra lại đủ bộ ngay trước khi gửi. Bản sao của `01-jira.md` có tên `01-jira.md.txt` (M365 có thể ẩn đuôi `.txt`), không thêm tiền tố số lần nữa.
+
 ## Bộ cài (Setup) và gỡ cài đặt
 
 ```
