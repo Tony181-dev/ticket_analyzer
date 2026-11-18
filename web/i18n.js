@@ -564,3 +564,7 @@ I18N.extend("en", {
 I18N.extend("vi", {"sub.understand": "Context sơ bộ và kế hoạch kiểm tra bằng chứng"});
 
 I18N.extend("en", {"sub.understand": "Preliminary context and evidence plan"});
+
+I18N.extend("vi", {"history.running": "Đang chạy"});
+
+I18N.extend("en", {"history.running": "Running"});

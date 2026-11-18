@@ -3,8 +3,25 @@ Validates the list of attachment file paths supplied with a chat request before 
 browser automation layer. It resolves each path, rejects requests with more than 3 attachments (M365 Copilot's limit per prompt; the app combines extra evidence beforehand, see app/ai/__init__.py), enforces a 10MB per-file / 25MB total size limit, refuses sensitive files or directories (via security.py) and unclassified binary content, returning the list of validated absolute paths for worker.py to use.
 """
 from pathlib import Path
+import shutil
 from security import is_binary,is_sensitive
 MAX_FILES=3
+
+def transport_files(files, folder):
+ """Stage already-validated text as byte-identical .txt files for tenant upload compatibility."""
+ folder=Path(folder);folder.mkdir(parents=True,exist_ok=True)
+ result=[];mapping=[]
+ for index,file in enumerate(files,1):
+  source=Path(file)
+  if source.suffix.lower() in {'.md','.json','.log','.jsonl','.yaml','.yml','.xml','.csv'}:
+   target=folder/f'{index:02}-{source.name}.txt'
+   shutil.copyfile(source,target)
+   result.append(str(target));mapping.append(f'{source.name} -> {target.name}')
+  else:result.append(str(source))
+ note=('Text attachments are uploaded as .txt for compatibility, with byte-for-byte identical content. '
+       'Use these mappings when an instruction refers to an original filename: '+ '; '.join(mapping)) if mapping else ''
+ return result,note
+
 def validate(items):
  result=[];total=0
  if len(items or[])>MAX_FILES:raise ValueError(f'Too many attachments: M365 Copilot accepts at most {MAX_FILES} per prompt (got {len(items)})')

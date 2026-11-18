@@ -83,6 +83,7 @@ function connect() {
       if (m.busy && S.preview) stopPreview();
       S.state.busy = m.busy; S.state.busy_run = m.busy ? m.run_id : null; renderInputs(); renderButtons(); renderFlow();
       renderAttProgress();
+      renderHistory();
       if (!m.busy) { maybePromptGate(); refreshDoctor(); }
       if (S.selected === 'log') refreshDrawer();
     } else if (m.type === 'doctor_log') {
@@ -246,10 +247,12 @@ function renderHistory() {
   const locale = I18N.locale;
   ul.innerHTML = runs.map((r) => {
     const when = new Date(r.created * 1000).toLocaleString(locale, { hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit' });
-    const tag = r.collab && r.collab.page_id ? '<span class="tag ok">Collab</span>'
+    const running = S.state.busy && S.state.busy_run === r.id;
+    const tag = running ? `<span class="tag history-running-tag"><svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-gear"/></svg>${esc(t('history.running'))}</span>`
+      : r.collab && r.collab.page_id ? '<span class="tag ok">Collab</span>'
       : r.failed ? `<span class="tag err">${esc(t('history.failed'))}</span>` : `<span class="tag">${r.done}/8</span>`;
-    return `<li class="run-item ${S.run && S.run.id === r.id ? 'active' : ''}" data-id="${esc(r.id)}">
-      <button type="button" class="history-open" data-open-run="${esc(r.id)}"><span class="k">${esc(r.issue)} ${tag}</span><span class="s">${esc(r.summary || '—')}</span><span class="t">${when}</span></button>
+    return `<li class="run-item ${S.run && S.run.id === r.id ? 'active' : ''} ${running ? 'running' : ''}" data-id="${esc(r.id)}" ${running ? 'aria-busy="true"' : ''}>
+      <button type="button" class="history-open" data-open-run="${esc(r.id)}"><span class="k"><span class="history-issue" title="${esc(r.issue)}">${esc(r.issue)}</span>${tag}</span><span class="s">${esc(r.summary || '—')}</span><span class="t">${when}</span></button>
       <button type="button" class="icon-btn history-delete" data-delete-run="${esc(r.id)}" title="${esc(t('history.delete'))}" aria-label="${esc(t('history.delete'))} ${esc(r.issue)}"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"/></svg></button></li>`;
   }).join('');
   for (const button of ul.querySelectorAll('[data-open-run]')) button.onclick = () => openRun(button.dataset.openRun);

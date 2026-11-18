@@ -165,6 +165,14 @@ class TicketWorkflowTest(unittest.TestCase):
         with ThreadPoolExecutor(max_workers=4) as pool:
             list(pool.map(work, range(4)))
 
+    def test_m365_blocked_attachment_or_uncertain_send_is_not_blindly_retried(self):
+        run = pipeline.create('M365-RETRY-1')
+        for code in ('M365_ATTACHMENT_BLOCKED', 'M365_ATTACHMENT_INPUT', 'M365_SEND_UNCERTAIN'):
+            with self.subTest(code=code), mock.patch.object(pipeline.ai, 'ask', side_effect=RuntimeError(code)) as ask:
+                with self.assertRaisesRegex(RuntimeError, code):
+                    pipeline._ask_ai(run, settings.load(), 'prompt', [], self.root, retries=2)
+                self.assertEqual(ask.call_count, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

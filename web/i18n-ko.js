@@ -261,3 +261,5 @@ I18N.extend("ko", {
 });
 
 I18N.extend("ko", {"sub.understand": "예비 맥락 및 증거 확인 계획"});
+
+I18N.extend("ko", {"history.running": "실행 중"});

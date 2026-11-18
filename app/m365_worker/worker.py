@@ -7,11 +7,11 @@ import os
 import sys
 os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 sys.dont_write_bytecode = True
-import atexit,json,time,traceback,uuid
+import atexit,json,time,traceback,uuid,tempfile
 from pathlib import Path
 from browser import Browser,PROFILE,DEFAULT_MODEL
 from sessions import Store,clean_unicode
-from attachments import validate
+from attachments import validate,transport_files
 def emit(x):
  payload=(json.dumps(clean_unicode(x),ensure_ascii=False,separators=(',',':'))+'\n').encode('utf-8',errors='replace')
  sys.stdout.buffer.write(payload);sys.stdout.buffer.flush()
@@ -125,7 +125,9 @@ for line in sys.stdin:
    resume=bool(rec and rec.get('messages') and not conversation_url)
    image_dir=str(p.get('image_dir')or'')or None
    try:
-    content,url,chosen,h=chat_with_auth_recovery(prompt,conversation_url,files,h,model,resume,image_dir)
+    with tempfile.TemporaryDirectory(prefix='ticket-analyzer-m365-',ignore_cleanup_errors=True) as transport_dir:
+     sent_files,transport_note=transport_files(files,transport_dir)
+     content,url,chosen,h=chat_with_auth_recovery(prompt+('\n\n'+transport_note if transport_note else ''),conversation_url,sent_files,h,model,resume,image_dir)
    except Exception as e:
     if str(e)=='LOGIN_REQUIRED':
      auth=False;emit(err(i,'M365_LOGIN_REQUIRED','M365 login required'));continue

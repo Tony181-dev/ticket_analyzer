@@ -1,6 +1,7 @@
 """M365 composer: the prompt must really be in the box before Enter (attachments alone are never sent)."""
 import sys
 import tempfile
+from unittest import mock
 import unittest
 from pathlib import Path
 
@@ -85,6 +86,37 @@ class ComposerTest(unittest.TestCase):
 
         self.assertTrue(self.type(TruncatedBox())[0], "a partial fill must be replaced by complete keyboard input")
         self.assertFalse(self.type(TruncatedBox(accept_insert=False, accept_keys=False))[0])
+
+    def test_closed_before_send_recovers_once_with_the_same_model_and_conversation(self):
+        worker = browser.Browser()
+        with mock.patch.object(worker, '_chat_once', side_effect=[browser.BrowserClosedError('closed'), ('answer', 'url', 'model')]) as chat:
+            result = worker.chat('prompt', 'https://m365.cloud.microsoft/chat/conversation', ['ticket.txt'], False, 'Chosen model')
+        self.assertEqual(result[0], 'answer')
+        self.assertEqual(chat.call_count, 2)
+        self.assertEqual(chat.call_args.args[:5], ('prompt', 'https://m365.cloud.microsoft/chat/conversation', ['ticket.txt'], False, 'Chosen model'))
+
+    def test_closed_after_send_never_automatically_resends(self):
+        worker = browser.Browser()
+
+        def closed_after_send(*args):
+            worker._submission_attempted = True
+            raise browser.BrowserClosedError('closed')
+
+        with mock.patch.object(worker, '_chat_once', side_effect=closed_after_send) as chat:
+            with self.assertRaisesRegex(RuntimeError, 'M365_SEND_UNCERTAIN'):
+                worker.chat('prompt')
+        self.assertEqual(chat.call_count, 1)
+
+    def test_selecting_chat_keeps_other_tabs_and_authentication_popups_open(self):
+        worker = browser.Browser()
+        chat = mock.Mock(url='https://m365.cloud.microsoft/chat/conversation')
+        login = mock.Mock(url='https://login.microsoftonline.com/oauth2/authorize')
+        for page in (chat, login):
+            page.is_closed.return_value = False
+        worker.ctx = mock.Mock(pages=[login, chat])
+        self.assertIs(worker._pick_page(), chat)
+        chat.close.assert_not_called()
+        login.close.assert_not_called()
 
 
 FIXTURE = ROOT / "tests" / "fixtures" / "m365_composer.html"
@@ -190,6 +222,61 @@ class LivePageTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, r'Attachment rejected: large.md \(5 B\)'):
                 self.worker.upload(self.page, str(file), timeout=3)
         self.assertEqual(self.clicks(), [])
+
+    def test_reported_remove_attachments_tooltip_is_detected_without_a_file_chip(self):
+        self.page.evaluate("""() => {
+          window.rejectUploads = true;
+          const send = document.querySelector('.fai-SendButton');
+          send.disabled = true;
+          send.title = 'Remove attachments to send';
+        }""")
+        with tempfile.TemporaryDirectory() as folder:
+            file = Path(folder) / '01-jira.md'
+            file.write_bytes(b'x' * 112617)
+            with self.assertRaisesRegex(RuntimeError, r'M365_ATTACHMENT_BLOCKED:.*01-jira.md.*112,617 B.*Remove attachments to send'):
+                self.worker.upload(self.page, str(file), timeout=2)
+        self.assertEqual(self.clicks(), [])
+
+    def test_wrong_image_picker_is_not_used_for_ticket_text(self):
+        self.page.evaluate("""() => {
+          document.getElementById('fileInput').accept = '.txt,.md';
+          const images = document.createElement('input');
+          images.type = 'file'; images.accept = 'image/*';
+          document.body.appendChild(images);
+        }""")
+        with tempfile.TemporaryDirectory() as folder:
+            file = Path(folder) / '01-jira.md.txt'
+            file.write_text('Jira content', encoding='utf-8')
+            self.worker.upload(self.page, str(file), timeout=4)
+        self.assertEqual(self.page.locator('#fileInput').evaluate('el => el.files[0].name'), '01-jira.md.txt')
+
+    def test_lazy_send_tooltip_outside_the_composer_is_revealed_and_reported(self):
+        self.page.evaluate("""() => {
+          window.rejectUploads = true;
+          const send = document.querySelector('.fai-SendButton');
+          send.disabled = true;
+          send.addEventListener('mouseenter', () => {
+            const tooltip = document.createElement('div');
+            tooltip.role = 'tooltip'; tooltip.textContent = 'Remove attachments to send';
+            document.body.appendChild(tooltip);
+          });
+        }""")
+        with tempfile.TemporaryDirectory() as folder:
+            file = Path(folder) / '01-jira.md.txt'
+            file.write_text('Jira evidence', encoding='utf-8')
+            with self.assertRaisesRegex(RuntimeError, 'M365_ATTACHMENT_BLOCKED:.*Remove attachments to send'):
+                self.worker.upload(self.page, str(file), timeout=4)
+
+    def test_blocker_phrase_inside_the_prompt_is_not_a_ui_rejection(self):
+        self.page.evaluate('enableSending()')
+        prompt = 'Investigate the user report: Remove attachments to send.'
+        self.worker.send_prompt(self.page, prompt, [], timeout=4)
+        self.assertEqual(self.page.evaluate('window.sentPrompts'), [prompt])
+
+    def test_upload_on_a_closed_page_fails_immediately(self):
+        self.page.close()
+        with self.assertRaises(browser.BrowserClosedError):
+            self.worker.upload(self.page, '01-jira.md', timeout=60)
 
     def test_unrelated_busy_indicator_does_not_mean_the_prompt_was_sent(self):
         self.page.evaluate('enableSending({acknowledge: false})')

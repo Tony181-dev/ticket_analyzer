@@ -8,7 +8,9 @@ import re
 import shutil
 import time
 import unicodedata
+import mimetypes
 from pathlib import Path
+from urllib.parse import urlparse
 from playwright.sync_api import sync_playwright
 URL = "https://m365.cloud.microsoft/chat"
 PROFILE = Path.home() / ".cache" / "consult_with_copilot" / "browser_profile"
@@ -16,6 +18,20 @@ DEFAULT_MODEL = "GPT-5.6 Sol Think Deeper"  # legacy; the app passes the chosen 
 MODEL_SELECT_ATTEMPTS = 3
 # M365 Copilot will not send attachments on their own: an empty composer keeps Send disabled.
 DEFAULT_PROMPT = "Thực hiện phân tích theo các file đính kèm. / Please analyze the attached files."
+
+class BrowserClosedError(RuntimeError):
+    pass
+
+def _closed_error(error):
+    return isinstance(error, BrowserClosedError) or "has been closed" in str(error).lower()
+
+def _accepts_file(accept, file_path):
+    if not accept or not file_path:
+        return True
+    suffix = Path(file_path).suffix.lower()
+    mime = mimetypes.guess_type(str(file_path))[0] or "application/octet-stream"
+    return any(value in (suffix, mime, "*/*") or (value.endswith("/*") and mime.startswith(value[:-1]))
+               for value in (item.strip().lower() for item in accept.split(",")) if value)
 def _fold(text):
     """Lower-case text without accents ("Tư duy sâu" -> "tu duy sau"); Hangul syllables are kept."""
     text = unicodedata.normalize("NFKD", (text or "").replace("đ", "d").replace("Đ", "D"))
@@ -81,6 +97,26 @@ _DRAFT_STATE_JS = r"""el => {
     uploading: !!scope && [...scope.querySelectorAll('[role="progressbar"], [aria-busy="true"], [class*="spinner" i]')].some(shown)
   };
 }"""
+_ATTACHMENT_BLOCKER_JS = r"""() => {
+  const shown = el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+  const editor = document.querySelector('#m365-chat-editor-target-element, [data-lexical-editor="true"], [role="textbox"][contenteditable="true"], textarea');
+  const scope = editor && (editor.closest('[class*="inputWrapper" i]') || editor.closest('[class*="ChatInput" i]') || editor.closest('form') || editor.parentElement);
+  const texts = [];
+  if (scope) for (const el of scope.querySelectorAll('*')) {
+    if (!shown(el) || el === editor || editor.contains(el)) continue;
+    texts.push(el.getAttribute('title') || '', el.getAttribute('aria-label') || '');
+    if (!el.children.length) texts.push(el.textContent || '');
+    for (const id of (el.getAttribute('aria-describedby') || '').split(/\s+/)) {
+      const description = document.getElementById(id);
+      if (description && !editor.contains(description)) texts.push(description.textContent || '');
+    }
+  }
+  for (const el of document.querySelectorAll('[role="alert"], [role="tooltip"]')) {
+    if (shown(el) && (!editor || !editor.contains(el))) texts.push(el.textContent || '');
+  }
+  const blocked = /remove\s+(?:the\s+)?(?:file\s+)?attachments?\s+to\s+send|attachments?.*(?:not supported|unsupported|not allowed)|file (?:type|format).*(?:not supported|unsupported)|(?:cannot|can't|unable to)\s+(?:upload|attach)|file.*too large|(?:xóa|xoá|gỡ|bỏ).*(?:tệp đính kèm|tệp|đính kèm).*(?:gửi)|첨부.*(?:제거|삭제).*전송/i;
+  return (texts.find(text => blocked.test(text)) || '').trim().slice(0, 400);
+}"""
 def launch_args():
     # Must stay identical to setup.py's launch_args() so the profile behaves the same way
     # during the interactive setup login as it does later during headless/headed automation.
@@ -135,19 +171,14 @@ class Browser:
         self.page = self._pick_page()
         return self.page
     def _pick_page(self):
-        # Drive exactly one tab: the M365 chat tab if present. Restored/popup tabs are closed
-        # so the worker never types into (or leaves focus on) a stray page.
+        # Select a chat tab without closing authentication popups or the user's diagnostic tabs.
         pages = [page for page in self.ctx.pages if not page.is_closed()]
         if not pages:
             return self.ctx.new_page()
         hosts = ("m365.cloud.microsoft", "microsoft365.com", "office.com")
-        keep = next((page for page in pages if any(host in (page.url or "") for host in hosts)), pages[0])
-        for page in pages:
-            if page is not keep:
-                try:
-                    page.close()
-                except Exception:
-                    pass
+        chats = [page for page in pages if urlparse(page.url or "").hostname in hosts]
+        current = getattr(self, "page", None)
+        keep = current if current in chats else chats[0] if chats else self.ctx.new_page()
         try:
             keep.bring_to_front()
         except Exception:
@@ -199,7 +230,7 @@ class Browser:
         deadline = time.time() + ms / 1000
         while time.time() < deadline:
             if page.is_closed():
-                return None
+                raise BrowserClosedError("M365_BROWSER_CLOSED: chat page has been closed before the composer was ready")
             item = self.composer(page)
             if item:
                 return item
@@ -498,15 +529,45 @@ class Browser:
                 if attempt < attempts:
                     page.wait_for_timeout(500 * attempt)
         raise RuntimeError(f"Unable to select {requested} after {attempts} attempts: {last_error}")
-    def file_input(self, page):
+    def file_input(self, page, file_path=None):
+        candidates = []
         for root in self.roots(page):
             try:
                 matches = root.locator("input[type='file']")
-                if matches.count():
-                    return matches.last
+                for index in range(matches.count()):
+                    item = matches.nth(index)
+                    accept = item.get_attribute("accept") or ""
+                    if item.is_enabled() and _accepts_file(accept, file_path):
+                        candidates.append((bool(accept), item))
             except Exception:
                 pass
-        return None
+        return max(candidates, key=lambda pair: pair[0])[1] if candidates else None
+
+    def check_page(self, page):
+        if page.is_closed():
+            raise BrowserClosedError("M365_BROWSER_CLOSED: chat page has been closed")
+
+    def attachment_blocker(self, page, reveal=False):
+        self.check_page(page)
+        for root in self.roots(page):
+            try:
+                text = root.evaluate(_ATTACHMENT_BLOCKER_JS)
+                if text:
+                    return text
+            except Exception as error:
+                if _closed_error(error):
+                    raise
+        if reveal:
+            button = self.send_button(page)
+            try:
+                if button is not None and button.is_disabled(timeout=1000):
+                    button.hover(timeout=1000)
+                    page.wait_for_timeout(200)
+                    return self.attachment_blocker(page)
+            except Exception as error:
+                if _closed_error(error):
+                    raise
+        return ""
     def _upload_state(self, page, name):
         """{chips, items, busy} of the composer area: file chips naming `name`, attachment-list entries and
         whether a visible progress indicator is still spinning there."""
@@ -528,26 +589,35 @@ class Browser:
         Only the composer area counts: the same file name already in the conversation (an earlier step)
         and spinners elsewhere on the page (hidden or not) used to make this wait return too early or time
         out ("Attachment upload did not complete")."""
-        file_input = self.file_input(page)
+        self.check_page(page)
+        file_input = self.file_input(page, file_path)
         if not file_input:
-            raise RuntimeError("Attachment control not found")
+            raise RuntimeError(f"M365_ATTACHMENT_INPUT: no enabled upload control accepts {Path(file_path).name}; check the selected model/session")
         name = Path(file_path).name
         size = Path(file_path).stat().st_size
         if timeout is None:
             timeout = min(120, 60 + (size // (256 * 1024)) * 5)
         before = self._upload_state(page, name)
         file_input.set_input_files(file_path)
-        deadline = time.time() + timeout
+        began = time.time()
+        deadline = began + timeout
         state = before
         ready = 0
+        probed = False
         while time.time() < deadline:
+            self.check_page(page)
             page.wait_for_timeout(400)
             state = self._upload_state(page, name)
+            added = state["chips"] > before["chips"] or state["items"] > before["items"]
+            reveal = not probed and not state["busy"] and (added or time.time() - began >= 1)
+            blocker = self.attachment_blocker(page, reveal=reveal)
+            probed = probed or reveal
+            if blocker:
+                raise RuntimeError(f"M365_ATTACHMENT_BLOCKED: Attachment rejected: {name} ({size:,} B): {blocker}. No prompt was sent; check the selected model/session and attachment policy")
             failures = [text for text in state.get("errors", []) if re.search(
                 r"failed|error|unsupported|too large|unable|couldn.t|can.t upload|không thể|quá lớn|không hỗ trợ|실패|너무 큽", text, re.I)]
             if failures:
-                raise RuntimeError(f"Attachment rejected: {name} ({size:,} B): {failures[0][:300]}")
-            added = state["chips"] > before["chips"] or state["items"] > before["items"]
+                raise RuntimeError(f"M365_ATTACHMENT_BLOCKED: Attachment rejected: {name} ({size:,} B): {failures[0][:300]}")
             ready = ready + 1 if added and not state["busy"] else 0
             if ready >= 2:
                 return
@@ -724,9 +794,15 @@ class Browser:
         refreshed = False
         keyboard_attempts = 0
         while time.monotonic() < deadline:
+            self.check_page(page)
+            blocker = self.attachment_blocker(page)
+            if blocker:
+                code = "M365_SEND_UNCERTAIN" if attempted else "M365_ATTACHMENT_BLOCKED"
+                raise RuntimeError(f"{code}: {blocker}. Check the selected model/session and attachment policy")
             state = self.draft_state(page)
             # Also accept a manual Send while automation was waiting for file processing.
             if self.generating(page) or len(self._cards(page)) > len(before):
+                self._submission_attempted = True
                 return
             if attempted:
                 if state and not state["text"].strip() and not state["attachments"] and not state["uploading"]:
@@ -754,6 +830,7 @@ class Browser:
                         # A click can reach M365 even when Playwright subsequently reports a timeout.
                         # Observe the draft before any retry rather than treating that as "not sent".
                         attempted, last_action = True, now
+                        self._submission_attempted = True
                         try:
                             button.click(timeout=2000)
                         except Exception:
@@ -763,6 +840,7 @@ class Browser:
                         current = self.composer(page)
                         if current is not None:
                             attempted, last_action = True, now
+                            self._submission_attempted = True
                             try:
                                 current.press("Enter", timeout=2000)
                             except Exception:
@@ -802,10 +880,9 @@ class Browser:
             page.goto(url, wait_until="domcontentloaded", timeout=60000)
             return page
         except Exception as error:
-            message = str(error).lower()
-            if "target page, context or browser has been closed" not in message:
+            if not _closed_error(error):
                 raise
-            self.close()
+            self.page = None
             page = self.open(headless)
             page.goto(url, wait_until="domcontentloaded", timeout=60000)
             return page
@@ -878,12 +955,32 @@ class Browser:
             saved.append(str(target))
         return saved
     def chat(self, prompt, url=None, files=None, headless=True, model=DEFAULT_MODEL, resume=False, image_dir=None):
+        self._request_url = url
+        for attempt in range(2):
+            self._submission_attempted = False
+            try:
+                return self._chat_once(prompt, url, files, headless, model, resume, image_dir)
+            except Exception as error:
+                if not _closed_error(error):
+                    raise
+                if self._submission_attempted:
+                    raise RuntimeError("M365_SEND_UNCERTAIN: the chat closed after a send attempt; verify the conversation before retrying to avoid duplicate prompts") from error
+                if attempt:
+                    raise BrowserClosedError("M365_BROWSER_CLOSED: chat closed again before sending after one recovery attempt") from error
+                # open() reuses a surviving context or recreates a closed one. Keep the same mode,
+                # requested model and conversation, without closing other tabs or forcing sign-in.
+                self.page = None
+                url = self._request_url or url
+                resume = False
+
+    def _chat_once(self, prompt, url=None, files=None, headless=True, model=DEFAULT_MODEL, resume=False, image_dir=None):
         self.images = []
         if resume and not url:
             page, target_url = self.resume_chat_page(headless)
         else:
             target_url = url or URL
             page = self.open_chat_page(target_url, headless)
+        self._request_url = target_url
         try:
             # Wait for the composer before deciding this is a login problem: a transient
             # silent-SSO redirect through login.microsoftonline.com is normal for a page

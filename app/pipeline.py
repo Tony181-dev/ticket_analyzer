@@ -186,7 +186,8 @@ def _estimate_tokens(prompt, files, answer):
     return {"input_tokens": sent // 4, "output_tokens": len(str(answer or "").encode("utf-8")) // 4, "model_calls": 1}
 
 
-_NO_RETRY = ("not signed in", "sign-in", "sign in", "login", "not installed", "cancel", "unauthor", "authenticat")
+_NO_RETRY = ("not signed in", "sign-in", "sign in", "login", "not installed", "cancel", "unauthor", "authenticat",
+             "m365_attachment_blocked", "m365_attachment_input", "m365_send_uncertain")
 
 
 def _retryable(exc):

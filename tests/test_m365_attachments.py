@@ -108,6 +108,33 @@ class PackTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, r'large-log-brief.md.*10,485,761 B.*10 MiB'):
             worker_attachments.validate([{'path': str(file)}])
 
+    def test_reported_112617_byte_markdown_is_preserved_in_txt_transport(self):
+        original = self.make('01-jira.md', data=b'# Jira ticket\n' + b'a' * (112617 - 14))
+        validated = worker_attachments.validate([{'path': str(original)}])
+        sent, note = worker_attachments.transport_files(validated, self.dir / 'transport')
+        self.assertEqual(len(sent), 1)
+        self.assertTrue(sent[0].endswith('.md.txt'))
+        self.assertEqual(Path(sent[0]).read_bytes(), original.read_bytes())
+        self.assertEqual(original.stat().st_size, 112617)
+        self.assertIn('01-jira.md -> ', note)
+
+    def test_transport_retains_binary_files_and_distinguishes_duplicate_names(self):
+        first = self.make('same.md', 'First ticket — tiếng Việt')
+        other = self.dir / 'another' / 'same.md'
+        other.parent.mkdir()
+        other.write_text('Second ticket', encoding='utf-8')
+        image = self.make('screen.png', data=b'\x89PNG')
+        sent, _ = worker_attachments.transport_files([first, other, image], self.dir / 'transport')
+        self.assertNotEqual(sent[0], sent[1])
+        self.assertEqual(Path(sent[0]).read_bytes(), first.read_bytes())
+        self.assertEqual(Path(sent[1]).read_bytes(), other.read_bytes())
+        self.assertEqual(sent[2], str(image))
+
+    def test_sensitive_original_is_rejected_before_transport(self):
+        sensitive = self.make('credentials.json', '{"secret": "not for upload"}')
+        with self.assertRaisesRegex(ValueError, 'sensitive'):
+            worker_attachments.validate([{'path': str(sensitive)}])
+
 
 if __name__ == "__main__":
     unittest.main()

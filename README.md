@@ -74,6 +74,8 @@ Mạng công ty chặn SSL: `start.bat` và Setup tự xử lý bằng chứng c
 | Infographic | Ảnh do M365 Copilot tạo | Nội dung tóm tắt do CLI tạo, render thành SVG cục bộ |
 | Đăng nhập | Nút “Đăng nhập M365” | `copilot login` hoặc `gh auth login` |
 
+M365 gửi các file văn bản nội bộ (Markdown/JSON/log…) qua bản sao `.txt` giữ nguyên byte, kèm ánh xạ tên file trong prompt; file gốc và giới hạn tải vẫn được giữ. Tool chọn ô upload phù hợp loại file và nhận diện cả thông báo chặn trong tooltip **“Remove attachments to send”**. Nếu model/phiên/tài khoản vẫn chặn attachment, bước dừng với lý do cụ thể để đổi cấu hình thay vì tự đổi model hoặc thử lại cùng tệp. Trang đóng trước khi gửi được phục hồi một lần; nếu đã bấm gửi thì không tự gửi lại để tránh trùng prompt.
+
 ## Bộ cài (Setup) và gỡ cài đặt
 
 ```
@@ -101,6 +103,7 @@ Máy người nhận vẫn cần Node.js (cho LogSleuth / Copilot CLI); Setup t�
 ## Cấu hình & dữ liệu
 
 - **Lịch sử:** rê chuột hoặc dùng phím Tab vào từng ticket để hiện nút thùng rác. Xác nhận **Yes / Cancel** chỉ xóa mục đã chọn; tác vụ đang chạy, thư mục dữ liệu riêng và file tải về Downloads được giữ lại.
+  Phiên đang chạy có bánh răng quay, nhãn **Đang chạy** và viền vàng, kể cả khi đang xem ticket khác; hoàn tất/dừng thì tự bỏ dấu hiệu này.
 - `data/config/settings.json`: ngôn ngữ, model, space key, parent page, thư mục tải… (sửa qua ⚙ trong app).
 - `data/config/mcp.json`: cấu hình MCP, **chứa token**, đã nằm trong `.gitignore`.
 - `data/runs/<ISSUE>-<thời gian>/`: toàn bộ file của mỗi lần chạy (`01-jira.md` … `07-collab.json`, `run.log`).

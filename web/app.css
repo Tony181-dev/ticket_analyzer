@@ -33,6 +33,7 @@
   --ring: rgba(36, 87, 214, .15);
   --err-line: #f1b4ae;
   --warn-line: #f2cf8f;
+  --run-active-border: #eab308;
   --c-mcp: #2457d6;
   --c-ai: #7a3fd1;
   --c-log: #0f8a7a;
@@ -166,6 +167,10 @@ button, input, textarea, select { font: inherit; color: inherit; }
 .credit { margin-top: auto; padding: 12px 6px 0; border-top: 1px solid var(--line); font-size: 11.5px; color: var(--ink-3); }
 .credit strong { color: var(--ink-2); font-weight: 600; }
 .run-item.active { background: var(--accent-soft); border-color: var(--accent-line-2); }
+.run-item.running, .run-item.running.active { border-color: var(--run-active-border); box-shadow: inset 0 0 0 1px var(--run-active-border); }
+.tag.history-running-tag { display: inline-flex; align-items: center; gap: 4px; color: var(--warn); background: var(--warn-soft); }
+.history-running-tag svg { flex: none; animation: spin 1.6s linear infinite; }
+@media (prefers-reduced-motion: reduce) { .history-running-tag svg { animation: none; } }
 .run-item .k { font-weight: 600; display: flex; align-items: center; gap: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .run-item .tag { flex: none; }
 .run-item .s { font-size: 12px; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

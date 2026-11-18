@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 os.environ["TA_DATA_DIR"] = tempfile.mkdtemp(prefix="ta-ui-check-")
 os.environ["TA_AXEL"] = ""
 
-from app import attachments, paths, pipeline, server, settings
+from app import attachments, events, paths, pipeline, server, settings
 from playwright.sync_api import sync_playwright, expect
 
 
@@ -63,6 +63,18 @@ def main():
             page.on("pageerror", lambda error: errors.append(str(error)))
             page.goto(base + "/?run=" + run["id"])
             expect(page.locator('#runList .run-item.active')).to_be_visible()
+            events.publish('busy', run_id=run['id'], busy=True)
+            running = page.locator(f'#runList .run-item[data-id="{run["id"]}"]')
+            expect(running).to_have_class('run-item active running')
+            expect(running.locator('.history-running-tag')).to_contain_text('Đang chạy')
+            expect(running.locator('.history-running-tag svg use')).to_have_attribute('href', '#i-gear')
+            page.locator('#newRun').click()
+            expect(running).to_have_class('run-item  running')
+            expect(running.locator('.history-running-tag')).to_be_visible()
+            page.screenshot(path=str(paths.DATA / 'history-running.png'))
+            events.publish('busy', run_id=run['id'], busy=False)
+            expect(running.locator('.history-running-tag')).to_have_count(0)
+            running.locator('.history-open').click()
             page.locator('#settingsBtn').click()
             expect(page.locator('.m365-settings [name=m365_model]')).to_be_visible()
             expect(page.locator('.m365-settings [name=m365_headless]')).to_be_visible()
