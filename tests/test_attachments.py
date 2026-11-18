@@ -663,6 +663,15 @@ class HistoryResetTest(unittest.TestCase):
 
 
 class SettingsAndDoctorTest(unittest.TestCase):
+    def test_model_aliases_accept_case_spacing_and_hyphens_and_preserve_custom_models(self):
+        for alias in ('GPT-5.6 Sol Think Deeper', 'GPT 5.6 Sol Think deeper', 'gPt 5.6 sOl tHiNk dEePeR'):
+            with self.subTest(alias=alias):
+                self.assertEqual(settings._valid('m365_model', alias), 'GPT-5.6 Sol Think Deeper')
+        self.assertEqual(settings._valid('copilot_model', 'GPT-6-LUNA'), 'gpt-6-luna')
+        self.assertEqual(settings._valid('copilot_model', 'AUTO'), '')
+        self.assertEqual(settings._valid('m365_model', 'Custom Model X'), 'Custom Model X')
+        self.assertNotEqual(settings._valid('m365_model', 'GPT 5.6 Sol Think'), 'GPT-5.6 Sol Think Deeper')
+
     def test_previous_default_models_migrate_once(self):
         paths.SETTINGS_FILE.write_text(json.dumps({"m365_model": "GPT 6 Luna", "copilot_model": "", "settings_version": 2}), encoding="utf-8")
         self.assertEqual(settings.load()["m365_model"], "GPT-5.6 Sol Think Deeper")

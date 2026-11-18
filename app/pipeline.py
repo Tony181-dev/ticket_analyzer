@@ -383,6 +383,7 @@ def get(run_id):
             run["inputs"].setdefault("data_dir", "")
             run.setdefault("gate_state", {})
             run.pop("pending_attachments", None)  # pre-gate pause: the evidence gate replaces it
+            run.pop("skip_pending", None)
             changed = False
             if "auto_publish_to_collab" not in run["inputs"]:
                 run["inputs"]["auto_publish_to_collab"] = not settings.load().get("review_before_publish", True)
@@ -678,6 +679,7 @@ def _stop_step(run, step, state, prior, fresh):
 def _mark_stale(run, from_step):
     for step in ORDER[ORDER.index(from_step):]:
         state = run["steps"][step]
+        state.pop("skipped_by_user", None)  # explicitly rerunning this range tries its steps again
         if state["status"] in ("done", "waiting"):
             state["status"] = "stale"
         elif state["status"] == "skipped":
@@ -691,7 +693,7 @@ def _refresh_skipped(run):
     """A skipped step that an input change made runnable becomes idle again."""
     for step in ORDER:
         state = run["steps"][step]
-        if state["status"] == "skipped" and APPLICABLE[step](run):
+        if state["status"] == "skipped" and not state.get("skipped_by_user") and APPLICABLE[step](run):
             state.update(status="idle", note="", error="")
 
 
@@ -740,12 +742,14 @@ class Executor:
         self.thread = None
         self.run_id = None
         self.cancel = threading.Event()
+        self._skip_request = None
 
     @property
     def busy(self):
         return bool(self.thread and self.thread.is_alive())
 
-    def start(self, run_id, start=None, only=False, publish=False, catalog_only=False, until=None, resume=False):
+    def start(self, run_id, start=None, only=False, publish=False, catalog_only=False, until=None, resume=False,
+              after_skip=False):
         """Run the pipeline: from `start` (default: step 1), a single step (`only`), up to `until`,
         or from wherever the run stopped (`resume`)."""
         if self.busy:
@@ -766,15 +770,80 @@ class Executor:
             raise ValueError(t("err.until_before_start"))
         self.cancel.clear()
         ai.reset()
+        self._skip_request = None
         self.run_id = run_id
-        self.thread = threading.Thread(target=self._run, args=(run_id, start, only, publish, catalog_only, until), daemon=True)
+        self.thread = threading.Thread(target=self._run, args=(run_id, start, only, publish, catalog_only, until),
+                                       kwargs={"after_skip": after_skip}, daemon=True)
         self.thread.start()
 
     def stop(self):
-        self.cancel.set()
-        ai.cancel()
+        with _lock:
+            self._skip_request = None  # Stop overrides a pending Skip; never continue after Stop.
+            run = get(self.run_id) if self.run_id else None
+            if run:
+                run.pop("skip_pending", None)
+            self.cancel.set()
+            ai.cancel()
 
-    def _run(self, run_id, start, only, publish, catalog_only=False, until=None, after_gate=False):
+    def _apply_user_skip(self, run, step):
+        state = run["steps"][step]
+        if state["status"] == "running":
+            _finish_step(state, "skipped", note=t("note.skip_step_user"), error="")
+        else:
+            state.update(status="skipped", note=t("note.skip_step_user"), error="")
+        state["skipped_by_user"] = True
+        run.pop("skip_pending", None)
+        run.pop("pending_gate", None)
+        run.pop("pending_tz", None)
+        _log(run, "– " + t("step." + step) + ": " + t("note.skip_step_user"))
+        _save(run)
+
+    def skip_step(self, run_id, step):
+        """Skip one step and continue on the same executor, after any running task has unwound."""
+        if step not in ORDER:
+            raise ValueError(f"Unknown pipeline step: {step}")
+        with _lock:
+            run = get(run_id)
+            if not run:
+                raise ValueError("Run not found")
+            if self.busy:
+                if (self.run_id != run_id or run.get("current_step") != step
+                        or run["steps"][step]["status"] != "running" or self._skip_request):
+                    raise RuntimeError(t("err.busy"))
+                self._skip_request = step
+                run["skip_pending"] = step
+                run["steps"][step]["note"] = t("note.skipping_step")
+                _save(run)
+                self.cancel.set()
+                # Hold the transition lock until cancellation completes: it must not kill the next call.
+                ai.cancel()
+                return
+            self._apply_user_skip(run, step)
+            index = ORDER.index(step) + 1
+            if index < len(ORDER):
+                self.start(run_id, ORDER[index], after_skip=True)
+
+    def _run(self, run_id, start, only, publish, catalog_only=False, until=None, after_gate=False,
+             after_skip=False):
+        while True:
+            self._run_pass(run_id, start, only, publish, catalog_only, until, after_gate, after_skip)
+            with _lock:
+                step, self._skip_request = self._skip_request, None
+                if not step:
+                    return
+                run = get(run_id)
+                self._apply_user_skip(run, step)
+                index = ORDER.index(step) + 1
+                if index == len(ORDER):
+                    events.publish("busy", run_id=run_id, busy=False)
+                    return
+                self.cancel.clear()
+                ai.reset()
+                start, only, publish, catalog_only, until = ORDER[index], False, False, False, None
+                after_gate, after_skip = True, True
+
+    def _run_pass(self, run_id, start, only, publish, catalog_only=False, until=None, after_gate=False,
+                  after_skip=False):
         run = get(run_id)
         cfg = settings.load()
         mode_changed = (run.get("ai_mode") != cfg["ai_mode"]
@@ -787,7 +856,7 @@ class Executor:
         requested_first = ORDER.index(start) if start else 0
         requested_step = ORDER[requested_first]
         first = requested_first
-        for index, prerequisite in enumerate(ORDER[:requested_first] if not catalog_only else []):
+        for index, prerequisite in enumerate(ORDER[:requested_first] if not catalog_only and not after_skip else []):
             if (run["steps"][prerequisite]["status"] == "stale"
                     and APPLICABLE[prerequisite](run)):
                 first = index
@@ -894,10 +963,13 @@ class Executor:
                 if last(step):
                     break
         finally:
-            run.pop("current_step", None)
-            _close_pass(run, paused)
-            _save(run)
-            events.publish("busy", run_id=run_id, busy=False)
+            with _lock:
+                run.pop("current_step", None)
+                continuing = self._skip_request and ORDER.index(self._skip_request) < len(ORDER) - 1
+                _close_pass(run, paused or bool(continuing))
+                _save(run)
+                if not self._skip_request:
+                    events.publish("busy", run_id=run_id, busy=False)
 
     def check(self):
         if self.cancel.is_set():

@@ -11,6 +11,7 @@
                                   use_infographic?, auto_publish_to_collab?, log_shift_minutes?, logsleuth?, start?}
   GET  /api/runs/<id>          -> run
   POST /api/runs/<id>/start    -> {from?, only?, until?, resume?, publish?}
+  POST /api/runs/<id>/skip     -> {step}: stop that step if running, then continue from the next
   POST /api/runs/<id>/inputs   -> any of the create options, to change them on an existing run
   POST /api/runs/<id>/gate     -> answer the evidence gate {names[], time_start?, time_end?, shift_minutes?, skip_logs?, folder?}
   POST /api/runs/<id>/timezone -> answer the time-zone question {mode: auto|suggested|manual|bypass, shift_minutes?,
@@ -252,9 +253,12 @@ class Handler(BaseHTTPRequestHandler):
                 if body.get("start", True):
                     pipeline.executor.start(run["id"], until=body.get("until"))
                 return self._send(200, pipeline.view(run))
-            m = re.fullmatch(r"/api/runs/([^/]+)/(start|inputs|gate|timezone|log-scan|graph-query|open-folder|attachments|extract|delete|reset)", p)
+            m = re.fullmatch(r"/api/runs/([^/]+)/(start|skip|inputs|gate|timezone|log-scan|graph-query|open-folder|attachments|extract|delete|reset)", p)
             if m:
                 run_id, action = m.groups()
+                if action == "skip":
+                    pipeline.executor.skip_step(run_id, body.get("step"))
+                    return self._send(202, {"ok": True})
                 if action == "reset":
                     return self._send(200, pipeline.view(pipeline.reset_workflow(run_id)))
                 if action == "delete":

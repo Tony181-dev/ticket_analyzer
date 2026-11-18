@@ -106,6 +106,8 @@ KO = {
     "note.skip_no_attached_logs": "티켓에 로그 첨부 파일이 없고 선택한 로그 파일도 없습니다",
     "note.skip_no_logs_found": "로그 파일을 얻지 못해 건너뜀 — 로그 없이 분석합니다",
     "note.skip_logs_user": "로그 없이 계속하기를 선택함",
+    "note.skip_step_user": "이 단계를 건너뛰도록 선택했습니다",
+    "note.skipping_step": "이 단계를 건너뛰기 전에 작업을 중지하는 중…",
     "note.skip_manual_gate": "수동: 로그 단계에서 시간 범위를 입력",
     "note.gate_review": "검토 대기: AI가 제안한 로그 파일, 시간 범위, 시간대",
     "note.gate_manual": "입력 대기: 다운로드할 로그 파일, 시간 범위, 시간대",

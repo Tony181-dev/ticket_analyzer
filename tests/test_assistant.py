@@ -135,6 +135,15 @@ class AssistantTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             assistant.ask("   ")
 
+    def test_turning_off_proactive_scans_blocks_delayed_triggers_but_keeps_manual_chat(self):
+        with patch.object(assistant.settings, 'load', return_value={**settings.load(), 'assistant_proactive': False}), \
+                patch.object(assistant.copilot, 'ask', return_value='Manual reply') as ask:
+            self.assertEqual(assistant.ask('', self.run_['id'], 'scan', 'gate', trigger='queued'), {'skipped': 'disabled'})
+            ask.assert_not_called()
+            assistant.ask('Manual question', self.run_['id'])
+            wait_idle()
+            ask.assert_called_once()
+
     def test_busy_skips_proactive_scans_and_stop_cancels(self):
         release = []
 

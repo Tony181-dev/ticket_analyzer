@@ -142,7 +142,23 @@ function renderMode() {
   if (document.activeElement !== $('#modelInput')) $('#modelInput').value = currentModel();
   renderModelMenu();
   renderHeadlessOption();
+  renderAssistantOption();
 }
+
+function renderAssistantOption() {
+  $('#assistantProactive').checked = S.state.settings.assistant_proactive !== false;
+}
+$('#assistantProactive').onchange = guard(async () => {
+  const enabled = $('#assistantProactive').checked;
+  $('#assistantProactive').disabled = true;
+  try {
+    S.state.settings = await api('/api/settings', { body: { assistant_proactive: enabled } });
+    if (window.Assistant) Assistant.sync();
+  } finally {
+    $('#assistantProactive').disabled = false;
+    renderAssistantOption();
+  }
+});
 
 function renderHeadlessOption() {
   $('#m365HeadlessOption').hidden = S.state.settings.ai_mode !== 'm365';
@@ -363,6 +379,7 @@ function renderInputs() {
   $('#infographicAuto').disabled = !!S.state.busy;
   $('#autoPublishCollab').checked = inputs().auto_publish_to_collab === true;
   $('#autoPublishCollab').disabled = !!S.state.busy;
+  renderAssistantOption();
   $('#issue').disabled = !!S.run;
 }
 // Ticket data folder: everything of the run goes there, attachments into its attachments/ folder. Empty =
@@ -692,6 +709,9 @@ function renderFlow() {
       <div class="node-sub">${esc(t('sub.' + s.id))}</div>
       ${note}
       ${publish}
+      <button type="button" class="btn btn-sm btn-danger-outline step-skip" data-skip-step="${s.id}"
+        ${preview || S.run?.skip_pending === s.id || (S.state.busy && !(S.state.busy_run === S.run?.id && sourceState.status === 'running')) ? 'disabled' : ''}
+        aria-label="${esc(t('stepSkip.label', { step: t('step.' + s.id) }))}">${esc(t('stepSkip.button'))}</button>
       <div class="node-foot">
         <span class="status">${icon ? `<svg><use href="#${icon}"/></svg>` : ''}${esc(label)}</span>
         <span class="time" data-time="${s.id}">${duration(st)}</span>
@@ -699,14 +719,45 @@ function renderFlow() {
     </li>`;
   }).join('');
   for (const li of $('#flow').querySelectorAll('.node')) {
-    li.onclick = (e) => { if (!e.target.closest('[data-publish]')) openDrawer(li.dataset.step); };
-    li.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openDrawer(li.dataset.step); } };
+    li.onclick = (e) => { if (!e.target.closest('button')) openDrawer(li.dataset.step); };
+    li.onkeydown = (e) => { if (e.target === li && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); openDrawer(li.dataset.step); } };
   }
   const pub = $('#flow [data-publish]');
   if (pub) pub.onclick = guard(() => startStep('collab', true, true));
   const gate = $('#flow [data-gate-open]');
   if (gate) gate.onclick = () => openDrawer('log');
+  for (const button of $('#flow').querySelectorAll('[data-skip-step]')) {
+    button.onclick = () => {
+      if (!S.run && !$('#issue').value.trim()) { $('#issue').focus(); return toast(t('run.needIssue'), true); }
+      const step = button.dataset.skipStep;
+      S.skipTarget = { runId: S.run?.id || null, step };
+      const next = S.state.steps[S.state.steps.findIndex((item) => item.id === step) + 1];
+      $('#skipStepText').textContent = t(next ? 'stepSkip.confirm' : 'stepSkip.confirmLast', {
+        step: t('step.' + step), next: next ? t('step.' + next.id) : '' });
+      openModal('#skipStepModal');
+      $('#skipStepModal [data-close]').focus();
+    };
+  }
 }
+
+$('#confirmSkipStep').onclick = guard(async () => {
+  const target = S.skipTarget;
+  if (!target || (S.run?.id || null) !== target.runId) return;
+  const button = $('#confirmSkipStep');
+  button.disabled = true;
+  try {
+    if (!S.run) {
+      S.run = await api('/api/runs', { body: { issue: $('#issue').value.trim(), ...S.draft, start: false } });
+      history.replaceState(null, '', `?run=${encodeURIComponent(S.run.id)}`);
+      S.reasoning = []; S.reasoningRun = S.run.id;
+    }
+    await api(`/api/runs/${encodeURIComponent(S.run.id)}/skip`, { body: { step: target.step } });
+    $('#skipStepModal').hidden = true;
+    S.run = await api(`/api/runs/${encodeURIComponent(S.run.id)}`);
+    S.state = await api('/api/state');
+    renderAll(); scheduleHistory();
+  } finally { button.disabled = false; }
+});
 
 function renderHead() {
   $('#resetWorkflowControl').hidden = !S.run;

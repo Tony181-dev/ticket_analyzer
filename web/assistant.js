@@ -200,6 +200,7 @@
 
   // ------------------------------------------------------------ proactive scans
   function fire(trigger, reason) {
+    if (S.state?.settings.assistant_proactive === false) { A.pending = null; return; }
     send('', 'scan', { reason, trigger }).then((res) => {
       if (res && res.skipped === 'busy') A.pending = { trigger, reason, run_id: S.run && S.run.id };
     }).catch(() => { /* proactive help never interrupts the user */ });
@@ -249,6 +250,7 @@
   }
 
   function sync() {
+    if (S.state?.settings.assistant_proactive === false) A.pending = null;
     if (S.run) onRun(S.run);
     if ($('#asstPanel')) {
       $('#asstContext').innerHTML = contextLine(); $('#asstChips').innerHTML = chips();

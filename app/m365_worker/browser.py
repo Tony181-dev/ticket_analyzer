@@ -48,6 +48,7 @@ def _same_prompt(text, prompt):
 _MODEL_WORDS = (("tuduysau", "thinkdeeper"), ("tuduy", "think"), ("phanhoinhanh", "quickresponse"),
                 ("tudong", "auto"))
 def _model_key(text):
+    """Case, whitespace and punctuation are aliases: GPT-5.6 … Deeper == GPT 5.6 … deeper."""
     key = _norm(text)
     for local, english in _MODEL_WORDS:
         key = key.replace(local, english)
@@ -345,7 +346,7 @@ class Browser:
         """Visible menu row for model `name`: exact title first, then prefix, then substring."""
         name = " ".join((name or DEFAULT_MODEL).split())
         want = _model_key(name)
-        legacy = name.casefold() == DEFAULT_MODEL.casefold()
+        legacy = want == _model_key(DEFAULT_MODEL)
         deadline = time.time() + wait_ms / 1000
         best, best_score = None, 0
         while True:
@@ -359,6 +360,11 @@ class Browser:
                     lines = text.strip().splitlines()
                     key = _model_key(lines[0] if lines else "")
                     if not key:
+                        continue
+                    # Normalizing spelling must not collapse two different reasoning modes.
+                    wanted_mode = "thinkdeeper" if "thinkdeeper" in want else "think" if "think" in want else ""
+                    row_mode = "thinkdeeper" if "thinkdeeper" in key else "think" if "think" in key else ""
+                    if wanted_mode and wanted_mode != row_mode:
                         continue
                     score = 4 if key == want else 3 if key.startswith(want) else 2 if want in key else 1 if len(key) >= 6 and want.startswith(key) else 0
                     if score <= best_score:
@@ -374,7 +380,7 @@ class Browser:
                         mark = root.locator('[data-testid="checkmark-Gpt_5_6_Reasoning"]').first
                         if mark.count():
                             row = mark.locator("xpath=ancestor::*[@role='menuitemradio'][1]").first
-                            if row.count() and row.is_visible():
+                            if row.count() and row.is_visible() and _model_key(row.inner_text().splitlines()[0]) == want:
                                 best, best_score = row, 4
                     except Exception:
                         pass
@@ -516,9 +522,11 @@ class Browser:
         if self._active(page, name):
             return
         if not self._open_model_menu(page):
+            if self._active(page, name) is False:
+                raise RuntimeError(f"Model {name!r} was clicked but the active label does not match")
             return
         option = self._find_option(page, name)
-        if option and (option.get_attribute("aria-checked") or "").lower() == "false":
+        if not option or (option.get_attribute("aria-checked") or "").lower() == "false":
             raise RuntimeError(f"Model {name!r} was clicked but is not selected")
     def select_model(self, page, name=DEFAULT_MODEL, attempts=MODEL_SELECT_ATTEMPTS):
         requested = " ".join((name or DEFAULT_MODEL).split())

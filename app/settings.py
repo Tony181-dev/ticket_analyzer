@@ -1,6 +1,7 @@
 """User settings (data/config/settings.json). Only non-secret values live here;
 MCP tokens live in data/config/mcp.json."""
 import json
+import re
 import threading
 
 from . import paths
@@ -63,7 +64,14 @@ def _valid(key, value):
         return int(value)
     if not isinstance(value, str):
         raise ValueError(f"{key} must be text")
-    return value.strip()
+    value = value.strip()
+    if key in ("m365_model", "copilot_model", "refine_model"):
+        known = M365_MODELS if key == "m365_model" else COPILOT_MODELS
+        model_key = lambda text: re.sub(r"[\W_]+", "", text.casefold())
+        value = next((model for model in known if model_key(model) == model_key(value)), value)
+        if key != "m365_model" and value == "auto":
+            value = ""
+    return value
 
 
 def _read():

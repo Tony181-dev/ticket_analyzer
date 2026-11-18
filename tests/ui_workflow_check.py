@@ -69,6 +69,18 @@ def main():
             page.on("pageerror", lambda error: errors.append(str(error)))
             page.goto(base + "/?run=" + run["id"])
             expect(page.locator('#runList .run-item.active')).to_be_visible()
+            expect(page.locator('#flow [data-skip-step]')).to_have_count(8)
+            expect(page.locator('#assistantProactive')).not_to_be_checked()
+            page.locator('#assistantProactive').check()
+            page.wait_for_function('!document.querySelector("#assistantProactive").disabled')
+            assert settings.load()['assistant_proactive'] is True
+            page.locator('#settingsBtn').click()
+            expect(page.locator('[name=assistant_proactive]')).to_be_checked()
+            page.locator('[name=assistant_proactive]').uncheck()
+            page.locator('#settingsForm button[type=submit]').click()
+            expect(page.locator('#settingsModal')).to_be_hidden()
+            expect(page.locator('#assistantProactive')).not_to_be_checked()
+            assert settings.load()['assistant_proactive'] is False
             page.locator('#consoleReasoningTab').click()
             expect(page.locator('#reasoningPanel')).to_be_visible()
             expect(page.locator('#usagePanel')).to_be_hidden()
@@ -88,6 +100,10 @@ def main():
             page.screenshot(path=str(paths.DATA / 'cli-reasoning.png'))
             expect(page.locator('#m365HeadlessOption')).to_be_hidden()
             page.locator('.mode-btn[data-mode=m365]').click()
+            page.locator('#modelInput').fill('gpt 5.6 SOL Think deeper')
+            page.locator('#modelInput').press('Enter')
+            expect(page.locator('#modelInput')).to_have_value('GPT-5.6 Sol Think Deeper')
+            assert settings.load()['m365_model'] == 'GPT-5.6 Sol Think Deeper'
             expect(page.locator('#m365HeadlessOption')).to_be_visible()
             page.locator('#m365Headless').uncheck()
             page.wait_for_function('!document.querySelector("#m365Headless").disabled')
@@ -154,6 +170,48 @@ def main():
             assert [Path(f).name for f in run['inputs']['log_files']] == ['main.log']
             page.screenshot(path=str(paths.DATA / 'attachments.png'))
             page.locator('#attProgModal [data-close]').click()
+            skip_calls = []
+
+            def runner(step):
+                def call(*args):
+                    skip_calls.append(step)
+                    return 'fixture'
+                return call
+
+            with mock.patch.dict(pipeline.RUNNERS, {step: runner(step) for step in pipeline.ORDER}):
+                skip_graph = page.locator('[data-skip-step=graph]')
+                skip_graph.press('Enter')
+                expect(page.locator('#skipStepModal')).to_be_visible()
+                expect(page.locator('#drawer')).to_have_attribute('aria-hidden', 'true')
+                expect(page.locator('#skipStepText')).to_contain_text('AI phân tích')
+                page.locator('#skipStepModal [data-close]').click()
+                assert skip_calls == []
+                skip_graph.click()
+                page.locator('#confirmSkipStep').click()
+                expect(page.locator('#skipStepModal')).to_be_hidden()
+                expect(page.locator('.node[data-step=graph]')).to_have_class('node s-skipped  ')
+                expect(page.locator('.node[data-step=collab]')).to_contain_text('Chờ duyệt')
+                assert skip_calls == ['analyze', 'format', 'infographic'], skip_calls
+                assert run['steps']['graph']['skipped_by_user']
+                entered = threading.Event()
+
+                def slow_step(run, cfg, executor):
+                    entered.set()
+                    executor.cancel.wait(5)
+                    executor.check()
+                    return 'finished'
+
+                with mock.patch.dict(pipeline.RUNNERS, analyze=slow_step):
+                    pipeline.executor.start(run['id'], 'analyze', only=True)
+                    assert entered.wait(2)
+                    expect(page.locator('[data-skip-step=analyze]')).to_be_enabled()
+                    expect(page.locator('[data-skip-step=format]')).to_be_disabled()
+                    page.locator('[data-skip-step=analyze]').click()
+                    page.locator('#confirmSkipStep').click()
+                    expect(page.locator('.node[data-step=analyze]')).to_contain_text('Bạn đã chọn bỏ qua')
+                    expect(page.locator('#resetWorkflow')).to_be_enabled()
+                    assert run['steps']['analyze']['status'] == 'skipped'
+                page.screenshot(path=str(paths.DATA / 'skip-step.png'))
             page.locator('#resetWorkflowControl [data-help]').click()
             expect(page.locator('#helpModal')).to_be_visible()
             page.locator('#helpModal [data-close]').first.click()

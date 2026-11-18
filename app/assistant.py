@@ -231,6 +231,8 @@ def ask(text="", run_id=None, kind="chat", reason="", trigger=None):
     """Queue one question (`chat`) or a system scan (`scan`, optional `reason` gate / error:<step>).
     A `trigger` key makes a proactive scan happen once: repeats and scans while busy are skipped."""
     kind = kind if kind in ("chat", "scan") else "chat"
+    if kind == "scan" and trigger and settings.load().get("assistant_proactive") is False:
+        return {"skipped": "disabled"}
     text = str(text or "").strip()[:MAX_TEXT]
     if kind == "chat" and not text:
         raise ValueError(t("asst.empty"))

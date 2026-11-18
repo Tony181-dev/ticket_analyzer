@@ -208,6 +208,35 @@ class LivePageTest(unittest.TestCase):
             self.worker.select_model(self.page, "Claude Opus", attempts=1)
         self.assertEqual([c for c in self.clicks() if c in ("Tự động", "Phản hồi nhanh", "Tư duy sâu", "PLUS")], [])
 
+    def test_model_aliases_select_the_actual_web_label_without_case_or_hyphen_dependency(self):
+        self.page.evaluate("""() => {
+          window.useEnglish();
+          for (const el of document.querySelectorAll('div,span')) {
+            if (!el.children.length) el.textContent = el.textContent.replace('GPT-5.6', 'GPT 5.6');
+          }
+        }""")
+        for requested in ('GPT-5.6 Sol Think Deeper', 'GPT 5.6 Sol Think deeper', 'gpt 5.6 sol THINK DEEPER'):
+            with self.subTest(requested=requested):
+                self.page.evaluate("document.querySelector('#current').textContent = 'Auto'")
+                self.worker.select_model(self.page, requested, attempts=1)
+                self.assertEqual(self.page.inner_text('#current'), 'GPT 5.6 Sol Think deeper')
+        self.assertEqual(self.clicks(), ['GPT 5.6 Sol Think deeper'] * 3)
+
+    def test_think_deeper_is_never_replaced_by_the_think_model(self):
+        self.page.evaluate("""() => {
+          window.useEnglish();
+          document.querySelector('#current').textContent = 'Auto';
+          document.querySelector('#sub [role=menuitemradio]').remove();
+          const ambiguous = document.createElement('div');
+          ambiguous.setAttribute('role', 'menuitemradio');
+          ambiguous.textContent = 'GPT 5.6 Sol';
+          document.querySelector('#sub').appendChild(ambiguous);
+        }""")
+        self.page.locator('#gptModeSwitcher').click()
+        self.page.locator('[data-testid="gptSubMenuModelTrigger-OpenAI"]').click()
+        self.assertIsNone(self.worker._option(self.page, 'GPT 5.6 Sol Think deeper', wait_ms=0))
+        self.assertEqual(self.clicks(), [])
+
     def test_composer_prompt_and_send_button(self):
         box = self.worker.composer(self.page)
         self.assertEqual(box.get_attribute("id"), "m365-chat-editor-target-element")

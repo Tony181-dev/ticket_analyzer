@@ -126,6 +126,8 @@ MESSAGES = {
     "note.skip_no_logs_found": ("Không lấy được file log nào — bỏ qua, phân tích không có log",
                                 "No log file could be obtained — skipped, analysis runs without logs"),
     "note.skip_logs_user": ("Bạn đã chọn bỏ qua log", "You chose to continue without logs"),
+    "note.skip_step_user": ("Bạn đã chọn bỏ qua bước này", "You chose to skip this step"),
+    "note.skipping_step": ("Đang dừng tác vụ để bỏ qua bước này…", "Stopping the task before skipping this step…"),
     "note.skip_manual_gate": ("Manual: bạn tự nhập khung giờ ở bước Log", "Manual: you enter the time window at the Log step"),
     "note.gate_review": ("Chờ bạn duyệt: tệp log AI đề xuất, khung giờ và múi giờ", "Waiting for your review: AI-suggested log files, time window and time zone"),
     "note.gate_manual": ("Chờ bạn nhập: tệp log cần tải, khung giờ và múi giờ", "Waiting for your input: log files to download, time window and time zone"),
