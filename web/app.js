@@ -485,6 +485,12 @@ function renderButtons() {
   $('#resumeBtn').hidden = busy || !resumable();
   $('#runAll').innerHTML = `<svg viewBox="0 0 24 24" width="18" height="18"><use href="#i-play"/></svg> ${esc(t(S.run ? 'run.again' : 'run.all'))}`;
   $('#runOnly').disabled = $('#runFrom').disabled = busy || !(S.run || $('#issue').value.trim());
+  const step = S.selected;
+  $('#skipStep').disabled = !step || !!S.preview || !(S.run || $('#issue').value.trim())
+    || S.run?.skip_pending === step
+    || (busy && !(S.state.busy_run === S.run?.id && stepState(step).status === 'running'));
+  $('#skipStep').dataset.skipStep = step || '';
+  $('#skipStep').setAttribute('aria-label', step ? t('stepSkip.label', { step: t('step.' + step) }) : t('stepSkip.button'));
   const previewing = !!S.preview;
   const previewButton = $('#previewBtn');
   previewButton.disabled = busy && !previewing;
@@ -709,9 +715,6 @@ function renderFlow() {
       <div class="node-sub">${esc(t('sub.' + s.id))}</div>
       ${note}
       ${publish}
-      <button type="button" class="btn btn-sm btn-danger-outline step-skip" data-skip-step="${s.id}"
-        ${preview || S.run?.skip_pending === s.id || (S.state.busy && !(S.state.busy_run === S.run?.id && sourceState.status === 'running')) ? 'disabled' : ''}
-        aria-label="${esc(t('stepSkip.label', { step: t('step.' + s.id) }))}">${esc(t('stepSkip.button'))}</button>
       <div class="node-foot">
         <span class="status">${icon ? `<svg><use href="#${icon}"/></svg>` : ''}${esc(label)}</span>
         <span class="time" data-time="${s.id}">${duration(st)}</span>
@@ -726,19 +729,18 @@ function renderFlow() {
   if (pub) pub.onclick = guard(() => startStep('collab', true, true));
   const gate = $('#flow [data-gate-open]');
   if (gate) gate.onclick = () => openDrawer('log');
-  for (const button of $('#flow').querySelectorAll('[data-skip-step]')) {
-    button.onclick = () => {
-      if (!S.run && !$('#issue').value.trim()) { $('#issue').focus(); return toast(t('run.needIssue'), true); }
-      const step = button.dataset.skipStep;
-      S.skipTarget = { runId: S.run?.id || null, step };
-      const next = S.state.steps[S.state.steps.findIndex((item) => item.id === step) + 1];
-      $('#skipStepText').textContent = t(next ? 'stepSkip.confirm' : 'stepSkip.confirmLast', {
-        step: t('step.' + step), next: next ? t('step.' + next.id) : '' });
-      openModal('#skipStepModal');
-      $('#skipStepModal [data-close]').focus();
-    };
-  }
 }
+
+$('#skipStep').onclick = () => {
+  const step = S.selected;
+  if (!step || $('#skipStep').disabled) return;
+  S.skipTarget = { runId: S.run?.id || null, step };
+  const next = S.state.steps[S.state.steps.findIndex((item) => item.id === step) + 1];
+  $('#skipStepText').textContent = t(next ? 'stepSkip.confirm' : 'stepSkip.confirmLast', {
+    step: t('step.' + step), next: next ? t('step.' + next.id) : '' });
+  openModal('#skipStepModal');
+  $('#skipStepModal [data-close]').focus();
+};
 
 $('#confirmSkipStep').onclick = guard(async () => {
   const target = S.skipTarget;

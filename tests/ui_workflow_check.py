@@ -4,6 +4,7 @@ Run: python tests/ui_workflow_check.py (requires Playwright Chromium).
 """
 import io
 import os
+import re
 from pathlib import Path
 import sys
 import tempfile
@@ -69,7 +70,12 @@ def main():
             page.on("pageerror", lambda error: errors.append(str(error)))
             page.goto(base + "/?run=" + run["id"])
             expect(page.locator('#runList .run-item.active')).to_be_visible()
-            expect(page.locator('#flow [data-skip-step]')).to_have_count(8)
+            expect(page.locator('#flow [data-skip-step]')).to_have_count(0)
+            for step in pipeline.ORDER:
+                page.locator(f'#flow [data-step={step}]').click()
+                expect(page.locator('#drawer #skipStep')).to_be_visible()
+                expect(page.locator('#skipStep')).to_have_attribute('data-skip-step', step)
+                page.locator('#drawerClose').click()
             expect(page.locator('#assistantProactive')).not_to_be_checked()
             page.locator('#assistantProactive').check()
             page.wait_for_function('!document.querySelector("#assistantProactive").disabled')
@@ -179,20 +185,22 @@ def main():
                 return call
 
             with mock.patch.dict(pipeline.RUNNERS, {step: runner(step) for step in pipeline.ORDER}):
-                skip_graph = page.locator('[data-skip-step=graph]')
+                page.locator('#flow [data-step=graph]').press('Enter')
+                skip_graph = page.locator('#drawer [data-skip-step=graph]')
                 skip_graph.press('Enter')
                 expect(page.locator('#skipStepModal')).to_be_visible()
-                expect(page.locator('#drawer')).to_have_attribute('aria-hidden', 'true')
+                expect(page.locator('#drawer')).to_have_attribute('aria-hidden', 'false')
                 expect(page.locator('#skipStepText')).to_contain_text('AI phân tích')
                 page.locator('#skipStepModal [data-close]').click()
                 assert skip_calls == []
                 skip_graph.click()
                 page.locator('#confirmSkipStep').click()
                 expect(page.locator('#skipStepModal')).to_be_hidden()
-                expect(page.locator('.node[data-step=graph]')).to_have_class('node s-skipped  ')
+                expect(page.locator('.node[data-step=graph]')).to_have_class(re.compile(r'\bs-skipped\b'))
                 expect(page.locator('.node[data-step=collab]')).to_contain_text('Chờ duyệt')
                 assert skip_calls == ['analyze', 'format', 'infographic'], skip_calls
                 assert run['steps']['graph']['skipped_by_user']
+                page.locator('#drawerClose').click()
                 entered = threading.Event()
 
                 def slow_step(run, cfg, executor):
@@ -204,14 +212,18 @@ def main():
                 with mock.patch.dict(pipeline.RUNNERS, analyze=slow_step):
                     pipeline.executor.start(run['id'], 'analyze', only=True)
                     assert entered.wait(2)
-                    expect(page.locator('[data-skip-step=analyze]')).to_be_enabled()
-                    expect(page.locator('[data-skip-step=format]')).to_be_disabled()
-                    page.locator('[data-skip-step=analyze]').click()
+                    page.locator('#flow [data-step=format]').click()
+                    expect(page.locator('#drawer [data-skip-step=format]')).to_be_disabled()
+                    page.locator('#drawerClose').click()
+                    page.locator('#flow [data-step=analyze]').click()
+                    expect(page.locator('#drawer [data-skip-step=analyze]')).to_be_enabled()
+                    page.locator('#skipStep').click()
                     page.locator('#confirmSkipStep').click()
                     expect(page.locator('.node[data-step=analyze]')).to_contain_text('Bạn đã chọn bỏ qua')
                     expect(page.locator('#resetWorkflow')).to_be_enabled()
                     assert run['steps']['analyze']['status'] == 'skipped'
                 page.screenshot(path=str(paths.DATA / 'skip-step.png'))
+                page.locator('#drawerClose').click()
             page.locator('#resetWorkflowControl [data-help]').click()
             expect(page.locator('#helpModal')).to_be_visible()
             page.locator('#helpModal [data-close]').first.click()
