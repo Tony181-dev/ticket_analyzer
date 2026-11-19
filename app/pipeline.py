@@ -6,6 +6,7 @@ run.json holding step states. Only one run executes at a time (M365 drives a
 single browser).
 """
 import html
+from copy import deepcopy
 import json
 import re
 import shutil
@@ -357,6 +358,7 @@ def view(run):
     if not run:
         return run
     out = dict(run)
+    out.pop("_input_baseline", None)
     out["steps"] = {step: {**state, "note": relocalize(state.get("note")), "error": relocalize(state.get("error"))}
                     for step, state in (run.get("steps") or {}).items()}
     if isinstance(run.get("pending_gate"), dict):
@@ -565,6 +567,15 @@ def reset_workflow(run_id):
 def update_inputs(run_id, log_files=None, source_dir=None, auto_attachments=None, download_dir=None, use_codegraph=None,
                   logsleuth_options=None, use_infographic=None, continue_on_optional_error=None,
                   auto_publish_to_collab=None, gate=None, log_shift_minutes=..., data_dir=None):
+    with _lock:
+        return _update_inputs(run_id, log_files, source_dir, auto_attachments, download_dir, use_codegraph,
+                              logsleuth_options, use_infographic, continue_on_optional_error,
+                              auto_publish_to_collab, gate, log_shift_minutes, data_dir)
+
+
+def _update_inputs(run_id, log_files=None, source_dir=None, auto_attachments=None, download_dir=None, use_codegraph=None,
+                   logsleuth_options=None, use_infographic=None, continue_on_optional_error=None,
+                   auto_publish_to_collab=None, gate=None, log_shift_minutes=..., data_dir=None):
     run = get(run_id)
     if not run:
         raise ValueError("Run not found")
@@ -587,68 +598,98 @@ def update_inputs(run_id, log_files=None, source_dir=None, auto_attachments=None
     if data_dir is not None:
         data_dir = _check_data_dir(data_dir)
     inputs = run["inputs"]
+    options = None
+    selected_catalog = None
+    if logsleuth_options is not None:
+        options = logsleuth.normalize_options({**inputs.get("logsleuth", {}), **logsleuth_options},
+                                             settings.load()["log_budget_tokens"])
+        if options["catalog_path"] and options["catalog_path"] != inputs.get("logsleuth", {}).get("catalog_path"):
+            selected_catalog = {"path": options["catalog_path"], "source_path": options["catalog_path"],
+                                **logsleuth.catalog_info(options["catalog_path"])}
+    run.setdefault("_input_baseline", deepcopy({"inputs": inputs, "steps": run["steps"],
+                   **{key: run[key] for key in ("gate_state", "pending_gate", "log_catalog") if key in run}}))
     if data_dir is not None and data_dir != (inputs.get("data_dir") or ""):
         old = run_dir(run_id)
         inputs["data_dir"] = data_dir
         _carry_files(old, run_dir(run_id))
         _log(run, t("log.data_dir", path=run_dir(run_id)))
-    if logsleuth_options is not None:
-        options = logsleuth.normalize_options({**inputs.get("logsleuth", {}), **logsleuth_options},
-                                             settings.load()["log_budget_tokens"])
-        previous_catalog = inputs.get("logsleuth", {}).get("catalog_path")
-        if options["catalog_path"] and options["catalog_path"] != previous_catalog:
-            info = logsleuth.catalog_info(options["catalog_path"])
-            run["log_catalog"] = {"path": options["catalog_path"], "source_path": options["catalog_path"], **info}
+    if options is not None:
+        if selected_catalog:
+            run["log_catalog"] = selected_catalog
         inputs["logsleuth"] = options
-        _mark_stale(run, "log")
     if gate is not None and gate != inputs.get("gate"):
         inputs["gate"] = gate
         if continue_on_optional_error is None:
             continue_on_optional_error = gate == "skip"
-        run.setdefault("gate_state", {}).pop("resolved", None)
-        run.pop("pending_gate", None)
-        if run["steps"]["log"]["status"] == "waiting":
-            run["steps"]["log"].update(status="stale", note="")
-        _refresh_skipped(run)
     if auto_attachments is not None and bool(auto_attachments) != bool(inputs.get("auto_attachments")):
         inputs["auto_attachments"] = bool(auto_attachments)
-        run.setdefault("gate_state", {}).pop("skip_logs", None)
-        _refresh_skipped(run)
-        _mark_stale(run, "log")
     if download_dir is not None:
         inputs["download_dir"] = str(download_dir)
     if use_codegraph is not None and bool(use_codegraph) != inputs.get("use_codegraph", True):
         inputs["use_codegraph"] = bool(use_codegraph)
-        _mark_stale(run, "graph")
     if use_infographic is not None and bool(use_infographic) != inputs.get("use_infographic", True):
-        enabled = bool(use_infographic)
-        inputs["use_infographic"] = enabled
-        _mark_stale(run, "infographic")
-        state = run["steps"]["infographic"]
-        if enabled:
-            state.update(status="stale", note="", error="")
-        else:
-            state.update(status="skipped", note=t("note.skip_infographic_disabled"), error="")
+        inputs["use_infographic"] = bool(use_infographic)
     if continue_on_optional_error is not None:
         inputs["continue_on_optional_error"] = bool(continue_on_optional_error)
     if auto_publish_to_collab is not None:
         inputs["auto_publish_to_collab"] = bool(auto_publish_to_collab)
     if log_shift_minutes is not ... and log_shift_minutes != inputs.get("log_shift_minutes"):
         inputs["log_shift_minutes"] = log_shift_minutes
-        _mark_stale(run, "log")
     if log_files is not None:
         inputs["log_files"] = log_files
-        run.setdefault("gate_state", {}).pop("skip_logs", None)
-        _refresh_skipped(run)
-        _mark_stale(run, "log")
-    if source_dir is not None:
+    if source_dir is not None and source_dir != inputs.get("source_dir", ""):
         inputs["source_dir"] = source_dir
         run.pop("log_catalog", None)
         if "logsleuth" in inputs:
             inputs["logsleuth"]["catalog_path"] = ""
-        _mark_stale(run, "log")
+    _reconcile_input_steps(run)
     _save(run)
     return run
+
+
+def _reconcile_input_steps(run):
+    """Compare edits with the last untouched results, so undoing an input edit also undoes its staleness.
+
+    The baseline survives reloads but is discarded before real execution, output edits, or downloads;
+    those actions can change evidence and must never restore an older result just by flipping a switch.
+    """
+    baseline = run["_input_baseline"]
+    inputs, before = run["inputs"], baseline["inputs"]
+    affected = {"log_files": "log", "source_dir": "log", "auto_attachments": "log", "logsleuth": "log",
+                "log_shift_minutes": "log", "use_codegraph": "graph", "use_infographic": "infographic"}
+    changed = {key for key in (*affected, "gate") if inputs.get(key) != before.get(key)}
+    catalog = run.get("log_catalog")
+    run["steps"] = deepcopy(baseline["steps"])
+    for key in ("gate_state", "pending_gate", "log_catalog"):
+        if key in baseline:
+            run[key] = deepcopy(baseline[key])
+        else:
+            run.pop(key, None)
+    if "source_dir" in changed:
+        run.pop("log_catalog", None)
+    elif inputs.get("logsleuth", {}).get("catalog_path") != before.get("logsleuth", {}).get("catalog_path"):
+        if catalog:
+            run["log_catalog"] = catalog
+    if "gate" in changed:
+        run.setdefault("gate_state", {}).pop("resolved", None)
+        run.pop("pending_gate", None)
+        if run["steps"]["log"]["status"] == "waiting":
+            run["steps"]["log"].update(status="stale", note="")
+    if changed & {"auto_attachments", "log_files"}:
+        run.setdefault("gate_state", {}).pop("skip_logs", None)
+    if changed & {"gate", "auto_attachments", "log_files"}:
+        _refresh_skipped(run)
+    for key, step in affected.items():
+        if key in changed:
+            _mark_stale(run, step, input_change=True)
+    if "use_infographic" in changed:
+        state = run["steps"]["infographic"]
+        if inputs["use_infographic"]:
+            state.update(status="stale", note="", error="")
+        else:
+            state.update(status="skipped", note=t("note.skip_infographic_disabled"), error="")
+    if not changed:
+        run.pop("_input_baseline", None)
 
 
 def _stop_step(run, step, state, prior, fresh):
@@ -676,7 +717,9 @@ def _stop_step(run, step, state, prior, fresh):
     return True
 
 
-def _mark_stale(run, from_step):
+def _mark_stale(run, from_step, input_change=False):
+    if not input_change:
+        run.pop("_input_baseline", None)
     for step in ORDER[ORDER.index(from_step):]:
         state = run["steps"][step]
         state.pop("skipped_by_user", None)  # explicitly rerunning this range tries its steps again
@@ -786,6 +829,7 @@ class Executor:
             ai.cancel()
 
     def _apply_user_skip(self, run, step):
+        run.pop("_input_baseline", None)
         state = run["steps"][step]
         if state["status"] == "running":
             _finish_step(state, "skipped", note=t("note.skip_step_user"), error="")
@@ -845,6 +889,7 @@ class Executor:
     def _run_pass(self, run_id, start, only, publish, catalog_only=False, until=None, after_gate=False,
                   after_skip=False):
         run = get(run_id)
+        run.pop("_input_baseline", None)
         cfg = settings.load()
         mode_changed = (run.get("ai_mode") != cfg["ai_mode"]
                 or run.get("infographic_mode") not in (None, cfg["ai_mode"]))
@@ -1126,6 +1171,7 @@ class Executor:
         run = get(run_id)
         if not run:
             raise ValueError("Run not found")
+        run.pop("_input_baseline", None)
         return run
 
     def _download(self, run, names, step, resume=False):

@@ -64,6 +64,7 @@ Mạng công ty chặn SSL: `start.bat` và Setup tự xử lý bằng chứng c
 - **Automation:** `python -m app run ABC-1234 --publish --json` (hoặc `TicketAnalyzer.exe run …`) chạy không cần giao diện; REST API điều khiển app đang chạy. Chi tiết: [docs/automation.md](docs/automation.md).
 - Source code folder được dùng chung để tạo catalog cho LogSleuth và (nếu bật) chạy Code Graph. Code Graph có checkbox riêng nên có thể tắt mà vẫn giữ catalog cho Log brief; nếu không chọn source folder, LogSleuth dùng chế độ tìm log dự phòng.
 - Sửa được kết quả **AI phân tích** và **XHTML report**. Sau khi lưu, các bước sau tự đánh dấu *Cần chạy lại*.
+- Đổi tùy chọn chỉ đánh dấu lại các bước bị ảnh hưởng. Nếu bật/tắt rồi quay về cấu hình cũ trước khi chạy hoặc sửa kết quả, trạng thái, ghi chú và thời gian của các bước được khôi phục, kể cả sau khi tải lại trang. Các thay đổi cấu hình khác chưa hoàn tác vẫn được tính; bật/tắt nhanh được lưu theo đúng thứ tự.
 - Mặc định app dừng trước bước 8 để duyệt rồi mới **Đăng lên Collab**. Nếu trang trùng tên đã tồn tại thì app cập nhật trang đó.
 - Infographic được gửi lên Collab bằng nội dung Base64, không phụ thuộc đường dẫn máy chạy MCP. App kiểm tra cả lỗi lồng trong phản hồi và đọc lại attachment đúng tên/dung lượng trước khi báo **đã đính kèm**; upload lỗi thì report vẫn đăng nhưng không chèn ảnh hỏng.
 
@@ -106,7 +107,7 @@ Máy người nhận vẫn cần Node.js (cho LogSleuth / Copilot CLI); Setup t�
 
 ## Cấu hình & dữ liệu
 
-- **Bỏ qua bước:** mỗi thẻ bước có nút **Bỏ qua** viền đỏ, xác nhận **Yes / No**. Bước đang chạy sẽ dừng và thu dọn xong trước khi chuyển tiếp; các bước khác tạm khóa khi workflow đang chạy. Bỏ qua bước cuối kết thúc luồng. File và nội dung đã đăng được giữ lại; tùy chọn tự động đăng Collab vẫn được áp dụng. Chạy lại toàn bộ sẽ thử lại các bước đã bỏ qua.
+- **Bỏ qua bước:** bấm vào thẻ bước để mở bảng thông tin bên phải, rồi chọn **Bỏ qua** viền đỏ và xác nhận **Yes / No**. Bước đang chạy sẽ dừng và thu dọn xong trước khi chuyển tiếp; các bước khác tạm khóa khi workflow đang chạy. Bỏ qua bước cuối kết thúc luồng. File và nội dung đã đăng được giữ lại; tùy chọn tự động đăng Collab vẫn được áp dụng. Chạy lại toàn bộ sẽ thử lại các bước đã bỏ qua.
 - **Model:** nhận tên không phân biệt hoa/thường và dấu cách/gạch nối, ví dụ `GPT-5.6 Sol Think Deeper` và `GPT 5.6 Sol Think deeper`. Model đã biết được lưu bằng tên chuẩn; Playwright cũng đối chiếu nhãn tương đương khi chọn và xác nhận trên web, giữ riêng **Think** với **Think Deeper**.
   Trong M365, model chỉ được chọn ở lần gọi AI đầu tiên của phiên. Các prompt/bước tiếp theo, kể cả tạo infographic, dùng lại model đã chọn; phiên đã lưu cũng giữ model khi worker khởi động lại. Chỉ chọn lại khi lựa chọn trước thất bại, phiên mới/reset, hoặc tab/phiên cũ không khôi phục được.
 - **Trợ lý AI tự động:** checkbox bên dưới **Tự động đẩy lên Collab** đồng bộ với **Trợ lý AI tự quét…** trong Cấu hình. Tắt để ngăn các lượt tự quét mới, gồm lượt đang chờ; vẫn có thể chủ động hỏi trợ lý.

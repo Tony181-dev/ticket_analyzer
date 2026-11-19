@@ -3,6 +3,7 @@
 Run: python tests/ui_workflow_check.py (requires Playwright Chromium).
 """
 import io
+from copy import deepcopy
 import os
 import re
 from pathlib import Path
@@ -242,6 +243,43 @@ def main():
             expect(page.locator('#reasoningPanel .reasoning-event')).to_have_count(0)
             assert pipeline.reasoning_events(run['id']) == []
             assert (paths.DATA / 'downloads' / 'UI-1' / 'logs.zip').exists()
+            # A completed workflow should return to its saved statuses after a toggle round trip,
+            # even when both clicks happen before the first settings request returns.
+            run['inputs'].update(source_dir=str(paths.DATA), use_codegraph=True)
+            for step, state in run['steps'].items():
+                state.update(status='waiting' if step == 'collab' else 'done', note='Saved result')
+            pipeline._save(run)
+            original_steps = deepcopy(run['steps'])
+            page.reload()
+            expect(page.locator('#useCodeGraph')).to_be_checked()
+            page.locator('#useCodeGraph').uncheck()
+            expect(page.locator('.node[data-step=analyze]')).to_have_class(re.compile(r'\bs-stale\b'))
+            page.locator('#useCodeGraph').check()
+            expect(page.locator('.node[data-step=analyze]')).to_have_class(re.compile(r'\bs-done\b'))
+            expect(page.locator('#runAll')).to_be_enabled()
+            assert run['steps'] == original_steps
+            requests = []
+
+            def record_input(route):
+                requests.append(route.request.post_data_json)
+                if len(requests) == 1:
+                    page.wait_for_timeout(150)
+                    expect(page.locator('#useCodeGraph')).to_be_checked()
+                    expect(page.locator('#runAll')).to_be_disabled()
+                route.continue_()
+
+            page.route('**/api/runs/*/inputs', record_input)
+            page.evaluate('''() => {
+                const checkbox = document.querySelector('#useCodeGraph');
+                checkbox.click(); checkbox.click();
+            }''')
+            expect(page.locator('#runAll')).to_be_enabled()
+            expect(page.locator('#useCodeGraph')).to_be_checked()
+            expect(page.locator('.node[data-step=analyze]')).to_have_class(re.compile(r'\bs-done\b'))
+            assert [body['use_codegraph'] for body in requests] == [False, True], requests
+            assert run['steps'] == original_steps
+            page.unroute('**/api/runs/*/inputs', record_input)
+            page.screenshot(path=str(paths.DATA / 'restored-step-statuses.png'))
             page.locator('#runList .run-item').hover()
             expect(page.locator('.history-delete')).to_have_css('opacity', '1')
             page.locator('.history-delete').click()

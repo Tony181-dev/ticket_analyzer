@@ -352,7 +352,18 @@ $('#newRun').onclick = () => {
 };
 
 // ---------------------------------------------------------------- inputs
-const inputs = () => (S.run ? S.run.inputs : S.draft);
+const inputWrites = new Map();
+let inputQueue = Promise.resolve();
+const inputs = () => {
+  let value = S.run ? S.run.inputs : S.draft;
+  for (const { runId, patch } of inputWrites.values()) {
+    if (runId !== S.run?.id) continue;
+    value = { ...value, ...patch,
+      ...(patch.logsleuth ? { logsleuth: { ...value.logsleuth, ...patch.logsleuth } } : {}) };
+  }
+  return value;
+};
+const savingInputs = () => [...inputWrites.values()].some(({ runId }) => runId === S.run?.id);
 const logOptions = () => {
   const options = { ...S.state.logsleuth.defaults, budget_tokens: S.state.settings.log_budget_tokens, ...(inputs().logsleuth || {}) };
   options.budget_tokens = Math.min(options.budget_tokens, S.state.settings.log_budget_tokens);
@@ -418,7 +429,7 @@ $('#infographicAuto').onchange = guard(() => setInputs({ use_infographic: $('#in
 $('#autoPublishCollab').onchange = guard(async () => {
   const enabled = $('#autoPublishCollab').checked;
   await setInputs({ auto_publish_to_collab: enabled });
-  if (enabled && S.run && S.run.steps.collab.status === 'waiting') {
+  if (enabled && inputs().auto_publish_to_collab && S.run && S.run.steps.collab.status === 'waiting') {
     await startStep('collab', true, true);
   }
 });
@@ -428,9 +439,22 @@ $('#logMode').onchange = guard(async () => {
 });
 
 async function setInputs(patch) {
-  if (S.run) S.run = await api(`/api/runs/${encodeURIComponent(S.run.id)}/inputs`, { body: patch });
-  else Object.assign(S.draft, patch);
+  if (!S.run) { Object.assign(S.draft, patch); renderAll(); return; }
+  const runId = S.run.id;
+  const key = Symbol();
+  inputWrites.set(key, { runId, patch });
+  const saved = inputQueue.catch(() => {}).then(async () => {
+    try {
+      const run = await api(`/api/runs/${encodeURIComponent(runId)}/inputs`, { body: patch });
+      if (S.run?.id === runId) S.run = run;
+    } finally {
+      inputWrites.delete(key);
+      if (S.run?.id === runId) { renderAll(); refreshDrawer(); }
+    }
+  });
+  inputQueue = saved;
   renderAll();
+  return saved;
 }
 
 $('#pickLogs').onclick = guard(async () => {
@@ -479,21 +503,23 @@ function resumable() {
 function renderButtons() {
   renderHeadlessOption();
   const busy = S.state.busy;
-  $('#resetWorkflow').disabled = busy || !S.run || !!S.preview;
+  const saving = savingInputs();
+  $('#resetWorkflow').disabled = busy || saving || !S.run || !!S.preview;
+  $('#runAll').disabled = $('#resumeBtn').disabled = saving;
   $('#runAll').hidden = busy;
   $('#stopBtn').hidden = !busy;
   $('#resumeBtn').hidden = busy || !resumable();
   $('#runAll').innerHTML = `<svg viewBox="0 0 24 24" width="18" height="18"><use href="#i-play"/></svg> ${esc(t(S.run ? 'run.again' : 'run.all'))}`;
-  $('#runOnly').disabled = $('#runFrom').disabled = busy || !(S.run || $('#issue').value.trim());
+  $('#runOnly').disabled = $('#runFrom').disabled = busy || saving || !(S.run || $('#issue').value.trim());
   const step = S.selected;
-  $('#skipStep').disabled = !step || !!S.preview || !(S.run || $('#issue').value.trim())
+  $('#skipStep').disabled = !step || saving || !!S.preview || !(S.run || $('#issue').value.trim())
     || S.run?.skip_pending === step
     || (busy && !(S.state.busy_run === S.run?.id && stepState(step).status === 'running'));
   $('#skipStep').dataset.skipStep = step || '';
   $('#skipStep').setAttribute('aria-label', step ? t('stepSkip.label', { step: t('step.' + step) }) : t('stepSkip.button'));
   const previewing = !!S.preview;
   const previewButton = $('#previewBtn');
-  previewButton.disabled = busy && !previewing;
+  previewButton.disabled = (busy || saving) && !previewing;
   previewButton.classList.toggle('btn-primary', !previewing);
   previewButton.classList.toggle('btn-danger', previewing);
   previewButton.setAttribute('aria-pressed', String(previewing));
