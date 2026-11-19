@@ -2,13 +2,24 @@
 rem Build the Windows installer package in dist\:
 rem   - TicketAnalyzer-Setup-<version>.exe   (installer, per user, no admin)
 rem   - TicketAnalyzer-Uninstall.bat          (finds and runs the installed uninstaller)
-rem Usage: build_installer.bat [--skip-build]   (--skip-build reuses dist\TicketAnalyzer if it still exists)
+rem Usage: build_installer.bat [--skip-build] [--no-pause]
 setlocal
 chcp 65001 >nul
 cd /d "%~dp0"
+if errorlevel 1 exit /b 1
+set "SKIP_BUILD="
+set "NO_PAUSE="
+for %%A in (%*) do (
+  if /i "%%~A"=="--skip-build" set "SKIP_BUILD=1"
+  if /i "%%~A"=="--no-pause" set "NO_PAUSE=1"
+)
 
-if /i not "%~1"=="--skip-build" (
-  call "%~dp0build_exe.bat"
+if not defined SKIP_BUILD (
+  if not exist "%~dp0build_exe.bat" (
+    echo [!] Thieu build_exe.bat. Hay lay day du source tu repo.
+    goto :fail
+  )
+  call "%~dp0build_exe.bat" --no-pause
   if errorlevel 1 goto :fail
 )
 if not exist "%~dp0dist\TicketAnalyzer\TicketAnalyzer.exe" (
@@ -47,14 +58,14 @@ echo.
 echo Xong, thu muc dist chua:
 echo  - TicketAnalyzer-Setup-%VER%.exe : bo cai (khong can quyen admin)
 echo  - TicketAnalyzer-Uninstall.bat    : bo go ^(hoac Settings ^> Apps ^> Ticket Analyzer^)
-explorer /select,"%SETUP%"
+if not defined NO_PAUSE explorer /select,"%SETUP%"
 echo.
-pause
+if not defined NO_PAUSE pause
 exit /b 0
 
 :fail
 echo.
-pause
+if not defined NO_PAUSE pause
 exit /b 1
 
 :findiscc

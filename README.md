@@ -86,6 +86,7 @@ Trước mỗi lượt M365, tool dọn attachment chưa gửi trong composer c�
 ```
 build_installer.bat            # build EXE rồi tạo bộ cài
 build_installer.bat --skip-build   # dùng lại dist\TicketAnalyzer đã build
+build_installer.bat --no-pause     # build tự động, không pause/mở Explorer
 ```
 
 Kết quả: `dist\TicketAnalyzer-Setup-<version>.exe` (Inno Setup; script tự cài Inno Setup qua winget nếu thiếu).
@@ -100,8 +101,10 @@ Kết quả: `dist\TicketAnalyzer-Setup-<version>.exe` (Inno Setup; script tự 
 build_exe.bat
 ```
 
-Script cài PyInstaller (chỉ dùng khi build) vào `.venv`, đóng gói app kèm Playwright và uv, rồi tạo
+Máy build cần Python 3.10+ **64-bit**. Script tự tạo `.venv` nếu chưa có, cài các thư viện còn thiếu và PyInstaller
+(chỉ dùng khi build), đóng gói app kèm Playwright và uv, rồi tạo
 `dist\TicketAnalyzer-<version>-win64.zip`. Người nhận chỉ cần giải nén và chạy `TicketAnalyzer.exe`.
+Chạy `build_exe.bat --no-pause` để không dừng chờ phím; script trả mã lỗi khác 0 nếu build thất bại.
 Dữ liệu được lưu ở `data\` cạnh file exe; nếu thư mục đó không ghi được thì lưu ở `%LOCALAPPDATA%\TicketAnalyzer`.
 Máy người nhận vẫn cần Node.js (cho LogSleuth / Copilot CLI); Setup tự cài nếu thiếu.
 
